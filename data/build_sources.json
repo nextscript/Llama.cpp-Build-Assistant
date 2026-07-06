@@ -1,0 +1,117 @@
+[
+  {
+    "id": "main",
+    "name": "main llama.cpp",
+    "repo_url": "https://github.com/ggml-org/llama.cpp",
+    "branch": "master",
+    "local_path": "repos/llama.cpp-main",
+    "type": "official",
+    "experimental": false,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "turboquant",
+    "name": "turboquant llama.cpp",
+    "repo_url": "https://github.com/TheTom/llama-cpp-turboquant",
+    "branch": "feature/turboquant-kv-cache",
+    "local_path": "repos/llama-cpp-turboquant",
+    "type": "fork",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "turboquant_3_4",
+    "name": "turboquant 3/4 llama.cpp",
+    "repo_url": "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant",
+    "branch": "feature/turboquant-kv-cache",
+    "local_path": "repos/llama-cpp-turboquant-3-4",
+    "type": "custom",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "prismml_ternary",
+    "name": "PrismML Ternary llama.cpp",
+    "repo_url": "https://github.com/PrismML-Eng/llama.cpp",
+    "branch": "prism",
+    "local_path": "repos/llama-cpp-prismml-ternary",
+    "type": "fork",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "diffusion_gemma",
+    "name": "Diffusion Gemma llama.cpp",
+    "repo_url": "https://github.com/ggml-org/llama.cpp",
+    "branch": "master",
+    "pr": 24427,
+    "local_path": "repos/llama-cpp-diffusion-gemma",
+    "type": "pr",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "gemma_external_drafter",
+    "name": "Gemma External Drafter / Assistant llama.cpp",
+    "repo_url": "https://github.com/ggml-org/llama.cpp",
+    "branch": "master",
+    "pr": 23211,
+    "local_path": "repos/llama-cpp-gemma-drafter",
+    "type": "pr",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "ocr_llama",
+    "name": "OCR llama.cpp",
+    "repo_url": "https://github.com/ggml-org/llama.cpp",
+    "branch": "master",
+    "pr": 17400,
+    "local_path": "repos/llama-cpp-ocr",
+    "type": "pr",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "luce",
+    "name": "Luce llama.cpp",
+    "repo_url": "https://github.com/Luce-Org/lucebox-hub",
+    "branch": "main",
+    "submodules": true,
+    "local_path": "repos/llama-cpp-luce",
+    "type": "fork",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "dflash",
+    "name": "DFlash llama.cpp",
+    "repo_url": "https://github.com/Anbeeld/beellama.cpp",
+    "branch": "main",
+    "local_path": "repos/llama-cpp-dflash",
+    "type": "fork",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "dspark",
+    "name": "DSpark (Spark Attention) llama.cpp",
+    "repo_url": "https://github.com/Anbild/beellama.cpp",
+    "branch": "main",
+    "note": "Spark Attention is a feature inside beellama.cpp (same repo as DFlash); build with Vulkan/CUDA.",
+    "local_path": "repos/llama-cpp-dspark",
+    "type": "fork",
+    "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "custom",
+    "name": "eigenes llama.cpp Repository",
+    "repo_url": "",
+    "branch": "master",
+    "local_path": "repos/custom-llama-cpp",
+    "type": "custom",
+    "experimental": true,
+    "default_cmake_flags": []
+  }
+]

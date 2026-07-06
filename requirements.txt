@@ -1,0 +1,6 @@
+customtkinter>=1.1.0
+psutil>=5.9.0
+py-cpuinfo>=9.0.0
+GPUtil>=1.4.0
+packaging>=23.0
+rich>=13.0.0

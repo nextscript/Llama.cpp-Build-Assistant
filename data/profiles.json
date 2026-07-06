@@ -1,0 +1,38 @@
+[
+  {
+    "name": "CPU schnell",
+    "source": "main",
+    "build_type": "CPU",
+    "cmake_flags": ["-DGGML_NATIVE=ON"],
+    "clean_build": true,
+    "update_repo": true,
+    "test_after_build": false
+  },
+  {
+    "name": "CUDA NVIDIA empfohlen",
+    "source": "main",
+    "build_type": "CUDA",
+    "cmake_flags": ["-DGGML_CUDA=ON"],
+    "clean_build": true,
+    "update_repo": true,
+    "test_after_build": true
+  },
+  {
+    "name": "Vulkan kompatibel",
+    "source": "main",
+    "build_type": "Vulkan",
+    "cmake_flags": ["-DGGML_VULKAN=ON"],
+    "clean_build": true,
+    "update_repo": true,
+    "test_after_build": false
+  },
+  {
+    "name": "ROCm AMD",
+    "source": "main",
+    "build_type": "HIP",
+    "cmake_flags": ["-DGGML_HIP=ON"],
+    "clean_build": true,
+    "update_repo": true,
+    "test_after_build": false
+  }
+]
