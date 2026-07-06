@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/nextscript/Llama.cpp-Build-Assistant/refs/heads/main/preview.PNG">
+
 # Llama.cpp Build Assistant
 
 A Python GUI application that automatically checks system hardware, ensures a
