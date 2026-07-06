@@ -151,6 +151,10 @@ fi
 log "Preparing $SOURCE"
 cd "$INSTALL_DIR"
 
+# Enable long paths for Windows (260 char limit workaround)
+git config --global core.longpaths true 2>/dev/null || true
+ok "git core.longpaths enabled"
+
 dir=""
 existing=$(find . -maxdepth 1 -type d -regex "\./b[0-9]\+_${DIR_SUFFIX}" 2>/dev/null | sort -r | head -1 || true)
 if [[ -n "$existing" ]]; then

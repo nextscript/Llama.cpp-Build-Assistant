@@ -142,9 +142,9 @@ function Get-SystemCmake {
 
 function Resolve-OneApiCompilerBin {
     # Resolve the Intel oneAPI compiler directory holding the SYCL runtime
-    # DLLs (sycl*.dll, pi_*.dll, intel-ext*.dll, umf*.dll, ur_*.dll).
-    # Prefer env vars exported by setvars.bat, then scan common install
-    # locations, including the redist tree used by newer oneAPI releases.
+    # DLLs (sycl*.dll, pi_*.dll, intel-ext*.dll, umf*.dll). Prefer env vars
+    # exported by setvars.bat, then scan common install locations, including
+    # the redist tree used by newer oneAPI releases.
     $candidates = @()
 
     if ($env:CMPLR_ROOT) {
@@ -185,126 +185,14 @@ function Resolve-OneApiCompilerBin {
     return $null
 }
 
-function Resolve-OneApiDllDirs {
-    # Return ALL oneAPI directories that may contain runtime DLLs needed by
-    # SYCL binaries: compiler runtime, oneDNN, oneMKL, oneTBB, and Unified Runtime.
-    $dirs = @()
-
-    # --- Compiler / SYCL / UR runtime ---
-    $compilerBin = Resolve-OneApiCompilerBin
-    if ($compilerBin) { $dirs += $compilerBin }
-
-    # --- oneDNN ---
-    $dnnlCandidates = @()
-    if ($env:ONEAPI_ROOT) {
-        $dnnlCandidates += Join-Path $env:ONEAPI_ROOT "dnnl\latest\bin"
-        $dnnlCandidates += Join-Path $env:ONEAPI_ROOT "dnnl\latest\redist\intel64_win\dnnl"
-    }
-    foreach ($base in @(
-        "C:\Program Files (x86)\Intel\oneAPI\dnnl",
-        "C:\Program Files\Intel\oneAPI\dnnl"
-    )) {
-        if (Test-Path $base) {
-            $dnnlCandidates += Join-Path $base "latest\bin"
-            $dnnlCandidates += Join-Path $base "latest\redist\intel64_win\dnnl"
-            Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
-                Sort-Object Name -Descending | ForEach-Object {
-                    $dnnlCandidates += Join-Path $_.FullName "bin"
-                    $dnnlCandidates += Join-Path $_.FullName "redist\intel64_win\dnnl"
-                }
-        }
-    }
-    # Also check inside compiler tree (newer oneAPI bundles dnnl there)
-    if ($compilerBin) {
-        $dnnlCandidates += Join-Path (Split-Path $compilerBin -Parent) "redist\intel64_win\dnnl"
-        $dnnlCandidates += Join-Path $compilerBin "dnnl"
-    }
-    foreach ($d in $dnnlCandidates) {
-        if ((Test-Path $d) -and (Get-ChildItem -Path $d -Filter "dnnl*.dll" -ErrorAction SilentlyContinue)) {
-            $dirs += $d
-            break
-        }
-    }
-
-    # --- oneMKL ---
-    $mklCandidates = @()
-    if ($env:MKLROOT) {
-        $mklCandidates += Join-Path $env:MKLROOT "bin"
-        $mklCandidates += Join-Path $env:MKLROOT "bin\intel64"
-        $mklCandidates += Join-Path $env:MKLROOT "redist\intel64"
-    }
-    if ($env:ONEAPI_ROOT) {
-        $mklCandidates += Join-Path $env:ONEAPI_ROOT "mkl\latest\bin"
-        $mklCandidates += Join-Path $env:ONEAPI_ROOT "mkl\latest\bin\intel64"
-        $mklCandidates += Join-Path $env:ONEAPI_ROOT "mkl\latest\redist\intel64"
-    }
-    foreach ($base in @(
-        "C:\Program Files (x86)\Intel\oneAPI\mkl",
-        "C:\Program Files\Intel\oneAPI\mkl"
-    )) {
-        if (Test-Path $base) {
-            $mklCandidates += Join-Path $base "latest\bin"
-            $mklCandidates += Join-Path $base "latest\bin\intel64"
-            $mklCandidates += Join-Path $base "latest\redist\intel64"
-            Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
-                Sort-Object Name -Descending | ForEach-Object {
-                    $mklCandidates += Join-Path $_.FullName "bin"
-                    $mklCandidates += Join-Path $_.FullName "bin\intel64"
-                    $mklCandidates += Join-Path $_.FullName "redist\intel64"
-                }
-        }
-    }
-    foreach ($d in $mklCandidates) {
-        if ((Test-Path $d) -and (Get-ChildItem -Path $d -Filter "mkl_sycl*.dll" -ErrorAction SilentlyContinue)) {
-            $dirs += $d
-            break
-        }
-    }
-
-    # --- oneTBB (Threading Building Blocks, needed by MKL) ---
-    $tbbCandidates = @()
-    if ($env:TBBROOT) {
-        $tbbCandidates += Join-Path $env:TBBROOT "bin"
-        $tbbCandidates += Join-Path $env:TBBROOT "redist\intel64_win\tbb"
-    }
-    if ($env:ONEAPI_ROOT) {
-        $tbbCandidates += Join-Path $env:ONEAPI_ROOT "tbb\latest\bin"
-        $tbbCandidates += Join-Path $env:ONEAPI_ROOT "tbb\latest\redist\intel64_win\tbb"
-    }
-    foreach ($base in @(
-        "C:\Program Files (x86)\Intel\oneAPI\tbb",
-        "C:\Program Files\Intel\oneAPI\tbb"
-    )) {
-        if (Test-Path $base) {
-            $tbbCandidates += Join-Path $base "latest\bin"
-            $tbbCandidates += Join-Path $base "latest\redist\intel64_win\tbb"
-            Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
-                Sort-Object Name -Descending | ForEach-Object {
-                    $tbbCandidates += Join-Path $_.FullName "bin"
-                    $tbbCandidates += Join-Path $_.FullName "redist\intel64_win\tbb"
-                }
-        }
-    }
-    foreach ($d in $tbbCandidates) {
-        if ((Test-Path $d) -and (Get-ChildItem -Path $d -Filter "tbb*.dll" -ErrorAction SilentlyContinue)) {
-            $dirs += $d
-            break
-        }
-    }
-
-    return ($dirs | Select-Object -Unique)
-}
-
 function Copy-SyclRuntimeDlls {
     # Copy Intel oneAPI SYCL runtime DLLs next to the built executables.
     # Without these the binaries fail to start with errors like
-    # "sycl8.dll not found" / "pi_win_proxy_loader.dll not found" /
-    # "dnnl.dll not found" / "mkl_sycl_blas.6.dll not found" /
-    # "ur_win_proxy_loader.dll not found" / "tbb12.dll not found".
+    # "sycl8.dll not found" / "pi_win_proxy_loader.dll not found".
     param([Parameter(Mandatory=$true)][string]$TargetDir)
 
-    $srcDirs = Resolve-OneApiDllDirs
-    if (-not $srcDirs -or $srcDirs.Count -eq 0) {
+    $src = Resolve-OneApiCompilerBin
+    if (-not $src) {
         WARN "Could not locate oneAPI compiler DLL directory."
         WARN "SYCL runtime DLLs were NOT copied — binaries may fail to start."
         WARN "Run from the 'Intel oneAPI command prompt', or copy the DLLs from"
@@ -315,33 +203,24 @@ function Copy-SyclRuntimeDlls {
     if (-not (Test-Path $TargetDir)) { New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null }
 
     $patterns = @("sycl*.dll", "pi_*.dll", "intel-ext*.dll", "umf*.dll",
-                  "libsycl*.dll", "sycl_*.dll", "ocloc*.dll",
-                  "ur_*.dll", "dnnl*.dll", "mkl_sycl*.dll",
-                  "mkl_core*.dll", "mkl_intel_thread*.dll",
-                  "mkl_def*.dll", "mkl_avx*.dll", "mkl_rt*.dll",
-                  "libiomp5md.dll", "libifcoremd.dll", "libmmd.dll",
-                  "tbb*.dll")
+                  "libsycl*.dll", "sycl_*.dll", "ocloc*.dll")
     $copied = 0
     $copiedNames = @()
-    foreach ($src in $srcDirs) {
-        foreach ($pat in $patterns) {
-            Get-ChildItem -Path $src -Filter $pat -File -ErrorAction SilentlyContinue | ForEach-Object {
-                if ($_.Name -notin $copiedNames) {
-                    Copy-Item $_.FullName -Destination $TargetDir -Force -ErrorAction SilentlyContinue
-                    if ($?) { $copied++; $copiedNames += $_.Name }
-                }
-            }
+    foreach ($pat in $patterns) {
+        Get-ChildItem -Path $src -Filter $pat -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName -Destination $TargetDir -Force -ErrorAction SilentlyContinue
+            if ($?) { $copied++; $copiedNames += $_.Name }
         }
     }
 
     if ($copied -gt 0) {
         OK "Copied $copied oneAPI SYCL runtime DLL(s):"
         $copiedNames | Select-Object -Unique | ForEach-Object { OK "  $_" }
-        OK "  from $($srcDirs -join ', ')"
+        OK "  from $src"
         OK "  into $TargetDir"
         return $true
     } else {
-        WARN "No SYCL runtime DLLs found to copy in: $($srcDirs -join ', ')"
+        WARN "No SYCL runtime DLLs found to copy in $src"
         return $false
     }
 }
@@ -789,6 +668,10 @@ OK "cmake OK: $CMAKE_EXE"
 # --- 8. CLONE REPO ---
 Log "Checking $Source"
 Set-Location $InstallDir
+
+# Enable long paths for Windows (260 char limit workaround)
+git config --global core.longpaths true
+OK "git core.longpaths enabled"
 
 $existingDir = Get-ChildItem $InstallDir -Directory | Where-Object { $_.Name -match "^b\d+_$([regex]::Escape($DIR_SUFFIX))$" } | Sort-Object Name -Descending | Select-Object -First 1
 
