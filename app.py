@@ -57,7 +57,7 @@ class BuildAssistantApp(ctk.CTk):
         super().__init__()
 
         self.title("Llama.cpp Build Assistant")
-        self.geometry("1500x950")
+        self.geometry("1600x1024")
         self.minsize(1200, 800)
         self.configure(fg_color=BG)
 
