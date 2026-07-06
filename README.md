@@ -1,33 +1,9 @@
 # Llama.cpp Build Assistant
 
-> **v0.2.0** — cross-platform continuation of freak288's **v0.1** build assistant.
-
 A Python GUI application that automatically checks system hardware, ensures a
 compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
-
-## What's new in v0.2
-
-- **Smart Python selection** (`python_manager.py`) — discovers every installed
-  interpreter, picks a compatible one for `requirements.txt`, and installs one
-  from [python.org](https://www.python.org) automatically if none fits. If you
-  have several Python versions (e.g. 3.12 / 3.13 / 3.14), it chooses the right
-  one instead of blindly using whatever `python` points to.
-- **Cross-platform builds** — Windows uses the hardened PowerShell pipeline;
-  macOS/Linux use a native shell build (`build_llamacpp.sh`).
-- **AMD RDNA4 (Radeon RX 9000)** first-class support — Vulkan backend with
-  SPIRV-Headers built from source, `CMP0194=OLD` + `CMAKE_ASM_COMPILER=cl`
-  workarounds (llama.cpp #22100), and `BUILD_SHARED_LIBS=OFF`. RDNA4 is
-  auto-detected and **Vulkan** is recommended (ROCm/HIP is unreliable on RDNA4).
-- **SYCL (Intel GPU) DLL bundling** — after a SYCL build, the required oneAPI
-  runtime DLLs (`sycl*.dll`, `pi_*.dll`, `intel-ext*.dll`, `umf*.dll`) are copied
-  next to the executables, so `llama-server.exe` starts without
-  *"sycl8.dll not found"* errors.
-- **Verified, current forks** — every source was re-checked (branches + PRs)
-  on 2026-07-06. PR-based sources (diffusion-gemma #24427, OCR #17400,
-  Gemma drafter #23211) are now fetched correctly; Luce clones with submodules.
-- **Tests + CI** — pytest suite and GitHub Actions workflows (CI + release).
 
 ## Features
 
@@ -106,9 +82,7 @@ python app.py
 ├── build_llamacpp.sh        # macOS/Linux build pipeline
 ├── start.bat / start.sh     # Launchers (use python_manager)
 ├── tests/                   # pytest suite
-├── .github/workflows/       # CI + release workflows
 ├── data/                    # Config + history JSON
-├── VERSION                  # 0.2.0
 └── pyproject.toml
 ```
 
@@ -124,9 +98,3 @@ python app.py
 python -m pip install -e ".[dev]"
 pytest
 ```
-
-## Lineage & License
-
-v0.1 was created by **freak288**. This v0.2 continuation keeps the original
-architecture and extends it with cross-platform builds, smart Python handling,
-RDNA4/SYCL fixes and verified forks. MIT License.
