@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llama-cpp-build-assistant"
-version = "0.2.5"
+version = "2.2.6"
 description = "Cross-platform GUI assistant that clones llama.cpp forks and builds the right variant (CPU/CUDA/Vulkan/HIP/SYCL) for your hardware."
 readme = "README.md"
 requires-python = ">=3.9"
