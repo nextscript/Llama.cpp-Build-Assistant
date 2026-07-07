@@ -49,8 +49,6 @@ GREEN = "#7bd45a"
 DANGER = "#dc2626"
 DANGER_HOVER = "#b91c1c"
 
-GITHUB_TOKEN = "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"
-
 
 # ─── Main Application ───────────────────────────────────────────────
 
@@ -1446,8 +1444,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 ssl_context.verify_mode = ssl.CERT_NONE
 
                 api_headers = {
-                    "User-Agent": "LlamaCppBuildAssistant",
-                    "Authorization": f"token {GITHUB_TOKEN}"
+                    "User-Agent": "LlamaCppBuildAssistant"
                 }
 
                 local_sha = None
@@ -1611,7 +1608,6 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                         file_api = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/{filename}?ref=main"
                         req = urllib.request.Request(file_api, headers={
                             "User-Agent": "LlamaCppBuildAssistant",
-                            "Authorization": f"token {GITHUB_TOKEN}",
                             "Accept": "application/vnd.github.v3.raw"
                         })
 
