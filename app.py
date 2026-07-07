@@ -1421,9 +1421,12 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
     def _parse_version(self, version_str):
         try:
             parts = version_str.strip().split(".")
-            return tuple(int(p) for p in parts)
+            nums = [int(p) for p in parts]
+            while len(nums) < 4:
+                nums.append(0)
+            return tuple(nums[:4])
         except Exception:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
     def check_for_updates(self):
         self.update_btn.configure(state="disabled", text="Checking...")
@@ -1433,52 +1436,97 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             try:
                 import urllib.request
                 import urllib.error
+                import ssl
+                import subprocess
 
-                version_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/VERSION?ref=main"
-                req = urllib.request.Request(version_url, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    remote_version = resp.read().decode().strip()
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
 
-                local_version = self._get_local_version()
+                local_sha = None
+                try:
+                    result = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        capture_output=True, text=True, timeout=5, cwd=ROOT_DIR
+                    )
+                    if result.returncode == 0:
+                        local_sha = result.stdout.strip()
+                except Exception:
+                    pass
 
-                if self._parse_version(remote_version) <= self._parse_version(local_version):
+                commits_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/main"
+                req = urllib.request.Request(commits_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                with urllib.request.urlopen(req, timeout=15, context=ssl_context) as resp:
+                    remote_commit = json.loads(resp.read().decode())
+                    remote_sha = remote_commit["sha"]
+
+                if local_sha and local_sha == remote_sha:
                     self.after(0, lambda: self._update_check_done(False, "Up to date."))
                     return
 
-                commits_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=100"
-                req2 = urllib.request.Request(commits_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                with urllib.request.urlopen(req2, timeout=15) as resp2:
-                    all_commits = json.loads(resp2.read().decode())
+                version_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/VERSION?ref=main"
+                req_ver = urllib.request.Request(version_url, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
+                with urllib.request.urlopen(req_ver, timeout=15, context=ssl_context) as resp_ver:
+                    remote_version = resp_ver.read().decode().strip()
 
-                version_commits = [c for c in all_commits if remote_version in c["commit"]["message"]]
-
-                if not version_commits:
-                    self.after(0, lambda: self._update_check_done(False, "No update commits found."))
-                    return
+                local_version = self._get_local_version()
 
                 changed_files = []
-                seen = set()
-                for commit in version_commits:
-                    sha = commit["sha"]
-                    commit_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/{sha}"
-                    req3 = urllib.request.Request(commit_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                    with urllib.request.urlopen(req3, timeout=15) as resp3:
-                        commit_data = json.loads(resp3.read().decode())
-                        for f in commit_data.get("files", []):
-                            filename = f["filename"]
-                            if filename not in seen:
-                                seen.add(filename)
-                                changed_files.append(filename)
+                commit_msg = ""
+                version_commits = []
+
+                if local_sha:
+                    try:
+                        compare_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/compare/{local_sha}...main"
+                        req2 = urllib.request.Request(compare_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                        with urllib.request.urlopen(req2, timeout=15, context=ssl_context) as resp2:
+                            compare_data = json.loads(resp2.read().decode())
+
+                        if compare_data.get("status") == "identical":
+                            self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                            return
+
+                        all_new_commits = compare_data.get("commits", [])
+                        version_commits = [c for c in all_new_commits if remote_version in c["commit"]["message"]]
+
+                    except urllib.error.HTTPError as e:
+                        if e.code == 404:
+                            commits_list_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=20"
+                            req3 = urllib.request.Request(commits_list_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                            with urllib.request.urlopen(req3, timeout=15, context=ssl_context) as resp3:
+                                recent_commits = json.loads(resp3.read().decode())
+
+                            new_commits = []
+                            for c in recent_commits:
+                                if c["sha"] == local_sha:
+                                    break
+                                new_commits.append(c)
+
+                            version_commits = [c for c in new_commits if remote_version in c["commit"]["message"]]
+
+                if version_commits:
+                    seen = set()
+                    for c in version_commits:
+                        sha = c["sha"]
+                        c_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/{sha}"
+                        req4 = urllib.request.Request(c_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                        with urllib.request.urlopen(req4, timeout=15, context=ssl_context) as resp4:
+                            c_data = json.loads(resp4.read().decode())
+                            for f in c_data.get("files", []):
+                                if f["filename"] not in seen:
+                                    seen.add(f["filename"])
+                                    changed_files.append(f["filename"])
+                    commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
 
                 if not changed_files:
-                    self.after(0, lambda: self._update_check_done(False, "No changed files found."))
+                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
                     return
 
-                commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
                 self.after(0, lambda: self._show_update_modal(local_version, remote_version, changed_files, commit_msg))
 
-            except Exception:
-                self.after(0, lambda: self._update_check_done(False, "Update check failed"))
+            except Exception as e:
+                err_msg = str(e) if str(e) else type(e).__name__
+                self.after(0, lambda: self._update_check_done(False, f"Update check failed: {err_msg}"))
 
         threading.Thread(target=_do_check, daemon=True).start()
 
