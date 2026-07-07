@@ -1,0 +1,93 @@
+name: release
+
+# Trigger a release by pushing a tag, e.g.:
+#   git tag v0.2.4 && git push origin v0.2.4
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Standalone executables (PyInstaller, best-effort per OS) ───────────────
+  # A failure on one OS does NOT block the release; whatever binaries build
+  # successfully are attached to the GitHub Release below.
+  build-binaries:
+    name: PyInstaller (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: llama-build-assistant-linux }
+          - { os: windows-latest, name: llama-build-assistant-windows }
+          - { os: macos-latest,   name: llama-build-assistant-macos }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build standalone executable
+        shell: bash
+        run: |
+          # Bundle customtkinter's assets and psutil's platform binaries.
+          CTK="$(python -c 'import customtkinter, os; print(os.path.dirname(customtkinter.__file__))')"
+          if [ "$RUNNER_OS" = "Windows" ]; then SEP=";"; else SEP=":"; fi
+          pyinstaller --noconfirm --onefile \
+            --add-data "${CTK}${SEP}customtkinter" \
+            --collect-all psutil \
+            --name "${{ matrix.name }}" \
+            app.py
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ── GitHub Release (always created on a v* tag) ───────────────────────────
+  release:
+    needs: build-binaries
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create clean source archive
+        # Only tracked files (no .venv/, builds/, __pycache__/).
+        run: git archive --format=zip -o llama-cpp-build-assistant-${{ steps.ver.outputs.version }}-source.zip HEAD
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            llama-cpp-build-assistant-*-source.zip
+            artifacts/**/*
