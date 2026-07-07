@@ -17,34 +17,49 @@ BUILD_TYPE=""
 INSTALL_DIR=""
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
 BUILD_UI=0
+UPDATE_REPO=0
+CLEAN_BUILD=0
+EXTRA_FLAGS=()
 
 usage() {
     cat <<EOF
-Usage: $0 -s SOURCE -t TYPE [-d INSTALL_DIR] [-j JOBS] [-u]
+Usage: $0 -s SOURCE -t TYPE [-d INSTALL_DIR] [-j JOBS] [-u] [-U] [-c] [-F FLAGS]
   -s SOURCE      main|turboquant|turboquant_3_4|prismml_ternary|
                  diffusion_gemma|gemma_external_drafter|ocr_llama|
                  luce|dflash|dspark
-  -t TYPE        CPU|CUDA|Vulkan|HIP|SYCL
+  -t TYPE        CPU|CUDA|Vulkan|HIP|SYCL|Metal
   -d INSTALL_DIR build output dir (default: ./builds)
   -j JOBS        parallel jobs (default: nproc)
   -u             build the web UI (needs npm)
+  -U             update the existing checkout (git fetch + reset)
+  -c             wipe the build directory (clean configure)
+  -F FLAGS       extra CMake flags, newline-separated (advanced)
 EOF
     exit 1
 }
 
-while getopts ":s:t:d:j:u" opt; do
+while getopts ":s:t:d:j:uUcF:" opt; do
     case "$opt" in
         s) SOURCE="$OPTARG" ;;
         t) BUILD_TYPE="$OPTARG" ;;
         d) INSTALL_DIR="$OPTARG" ;;
         j) JOBS="$OPTARG" ;;
         u) BUILD_UI=1 ;;
+        U) UPDATE_REPO=1 ;;
+        c) CLEAN_BUILD=1 ;;
+        F) while IFS= read -r _line; do [[ -n "$_line" ]] && EXTRA_FLAGS+=("$_line"); done <<< "$OPTARG" ;;
         *) usage ;;
     esac
 done
 
 [[ -z "$SOURCE" || -z "$BUILD_TYPE" ]] && usage
-case "$BUILD_TYPE" in CPU|CUDA|Vulkan|HIP|SYCL) ;; *) echo "Bad type: $BUILD_TYPE"; usage ;; esac
+case "$BUILD_TYPE" in CPU|CUDA|Vulkan|HIP|SYCL|Metal) ;; *) echo "Bad type: $BUILD_TYPE"; usage ;; esac
+
+# Metal is macOS-only.
+if [[ "$BUILD_TYPE" == "Metal" && "$(uname)" != "Darwin" ]]; then
+    echo "Metal is only available on macOS. Use this build type only on a Mac." >&2
+    exit 1
+fi
 
 # ── Colors ────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -56,6 +71,22 @@ log()  { printf '\n%s==>%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
 ok()   { printf '    %s[OK]%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf '    %s[!!]%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+detect_amd_gfx_target() {
+    # Best-effort detection of the installed AMD GPU gfx target(s) for HIP
+    # builds. Returns a comma-separated list (e.g. "gfx1201"), or empty.
+    local targets=""
+    if have rocm_agent_list; then
+        targets="$(rocm_agent_list 2>/dev/null | grep -oE 'gfx[0-9a-f]+' | sort -u | paste -sd, -)"
+    fi
+    if [[ -z "$targets" ]] && have rocminfo; then
+        targets="$(rocminfo 2>/dev/null | grep -iE '^\s*Name:\s*gfx' | grep -oE 'gfx[0-9a-f]+' | sort -u | paste -sd, -)"
+    fi
+    if [[ -z "$targets" ]] && have hipconfig; then
+        targets="$(hipconfig --droc-arch 2>/dev/null | grep -oE 'gfx[0-9a-f]+' | sort -u | paste -sd, -)"
+    fi
+    echo "$targets"
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -z "$INSTALL_DIR" ]] && INSTALL_DIR="$SCRIPT_DIR/builds"
@@ -116,6 +147,14 @@ case "$BUILD_TYPE" in
         have hipcc || { warn "ROCm/HIP (hipcc) not found: https://rocm.docs.amd.com"; exit 1; }
         ok "HIP: $(hipcc --version | tail -1)"
         ;;
+    Metal)
+        # Metal needs the macOS SDK / Xcode Command Line Tools (Metal framework).
+        if [[ "$(uname)" != "Darwin" ]]; then
+            warn "Metal backend is macOS-only."; exit 1
+        fi
+        if have xcrun; then ok "Xcode CLT: $(xcrun --find clang 2>/dev/null)";
+        else warn "Run: xcode-select --install"; exit 1; fi
+        ;;
     SYCL)
         if have icpx || have icx; then ok "Intel oneAPI DPC++ found"
         else
@@ -159,7 +198,16 @@ dir=""
 existing=$(find . -maxdepth 1 -type d -regex "\./b[0-9]\+_${DIR_SUFFIX}" 2>/dev/null | sort -r | head -1 || true)
 if [[ -n "$existing" ]]; then
     dir="$existing"
-    ok "Existing directory: $dir (skipping clone)"
+    if [[ "$UPDATE_REPO" == "1" ]]; then
+        log "Updating existing checkout: $dir"
+        ( cd "$dir" \
+            && git fetch --all --prune \
+            && git reset --hard "origin/$REPO_BRANCH" \
+            && git clean -fdx -e node_modules )
+        ok "Updated to latest '$REPO_BRANCH'"
+    else
+        ok "Existing directory: $dir (skipping update)"
+    fi
 else
     tmp="./_tmp_$SOURCE"
     rm -rf "$tmp"
@@ -196,12 +244,18 @@ fi
 
 # ── CMake configure + build ───────────────────────────────────────────────
 build_dir="$dir/build"
-rm -rf "$build_dir"
+if [[ "$CLEAN_BUILD" == "1" ]]; then
+    rm -rf "$build_dir"
+fi
 mkdir -p "$build_dir"
 
-# Base flags (single-config Ninja/Makefiles on Unix)
+# Base flags (single-config Ninja/Makefiles on Unix).
+# GGML_NATIVE=ON lets llama.cpp's own CPUID detection enable every available
+# ISA (AVX2, AVX512, FMA, F16C, AMX, ...) automatically — far better than
+# hard-coding AVX2/FMA/F16C, which leaves AVX512/AMX disabled on Zen4/Zen5
+# and modern Intel Xeons.
 cmake_flags=(-S "$dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
-             -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+             -DGGML_NATIVE=ON
              -DLLAMA_BUILD_SERVER=ON -DLLAMA_CURL=OFF -DGGML_CCACHE=OFF)
 
 case "$BUILD_TYPE" in
@@ -220,18 +274,32 @@ case "$BUILD_TYPE" in
         ;;
     HIP)
         cmake_flags+=(-DGGML_HIP=ON -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=ON)
+        # Explicitly target the installed AMD GPU(s). AMDGPU_TARGETS is
+        # deprecated upstream; GPU_TARGETS is the supported name. Without an
+        # explicit target, CMake only compiles for the GPU present at configure
+        # time (breaks multi-GPU / headless setups).
+        amd_target="$(detect_amd_gfx_target)"
+        [[ -n "$amd_target" ]] && cmake_flags+=("-DGPU_TARGETS=$amd_target")
         ;;
     SYCL)
         cmake_flags=(-S "$dir" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release
                      -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
                      -DGGML_SYCL=ON -DGGML_SYCL_F16=ON
-                     -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+                     -DGGML_NATIVE=ON
                      -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_SERVER=ON
                      -DLLAMA_CURL=OFF -DGGML_CCACHE=OFF)
+        ;;
+    Metal)
+        # macOS Metal backend. EMBED_LIBRARY bakes the .metallib into the
+        # binary so it is self-contained (no external metallib lookup).
+        cmake_flags+=(-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+                      -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DBUILD_SHARED_LIBS=ON)
         ;;
 esac
 
 log "CMake configure: cmake ${cmake_flags[*]}"
+# Append any user-supplied extra CMake flags last (highest precedence).
+[[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && cmake_flags+=("${EXTRA_FLAGS[@]}")
 cmake "${cmake_flags[@]}"
 
 log "Building $SOURCE ($BUILD_TYPE) with $JOBS jobs"

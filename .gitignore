@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Build outputs and toolchain downloads
+builds/
+deps/
+logs/
+
+# Generated runtime data (profiles are seeded from config.py defaults)
+data/build_history.json
+data/system_report.json

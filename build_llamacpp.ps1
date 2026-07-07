@@ -14,12 +14,15 @@ param(
     [string]$Source,
     
     [Parameter(Mandatory=$true)]
-    [ValidateSet("CPU", "CUDA", "Vulkan", "HIP", "SYCL")]
+    [ValidateSet("CPU", "CUDA", "Vulkan", "HIP", "SYCL", "Metal")]
     [string]$BuildType,
     
     [string]$InstallDir = "",
     [int]$ParallelJobs = 12,
-    [switch]$BuildUi
+    [switch]$BuildUi,
+    [switch]$Update,
+    [switch]$CleanBuild,
+    [string]$ExtraFlags = ""
 )
 
 Set-StrictMode -Off
@@ -96,8 +99,8 @@ $sourceConfig = @{
         Suffix = "dflash.cpp"
     }
     "dspark" = @{
-        Url = "https://github.com/ggml-org/llama.cpp.git"
-        Branch = "master"
+        Url = "https://github.com/Anbild/beellama.cpp.git"
+        Branch = "main"
         Suffix = "dspark.cpp"
     }
 }
@@ -108,6 +111,20 @@ $REPO_BRANCH = $config.Branch
 $DIR_SUFFIX = $config.Suffix
 $REPO_PR = $config.PR            # PR number for PR-based sources (e.g. 24427)
 $REPO_SUBMODULES = $config.Submodules  # $true to clone with --recurse-submodules
+
+# Metal is a macOS-only backend. Bail out early with guidance on Windows.
+if ($BuildType -eq "Metal") {
+    Write-Host "Metal backend is only available on macOS (Apple Silicon / Intel Macs)." -ForegroundColor Red
+    Write-Host "On Windows, choose CUDA (NVIDIA), Vulkan, HIP (AMD) or SYCL (Intel) instead." -ForegroundColor Yellow
+    exit 1
+}
+
+# Parse extra CMake flags (newline-separated string -> array). User-supplied
+# flags are appended last so they take precedence over the defaults.
+$extraFlagList = @()
+if ($ExtraFlags) {
+    $extraFlagList = $ExtraFlags -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
 
 # --- HELPER FUNCTIONS ---
 function Log($msg)  { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -303,6 +320,47 @@ function Build-WebUi {
     }
     OK "Web UI built"
     return $true
+}
+
+function Resolve-HipClangBin {
+    # Resolve the AMD HIP SDK bin dir holding clang/clang++/hipcc (Windows).
+    # CMake's HIP language is not supported on Windows, so ggml-hip forces the
+    # hipcc/clang compiler path — we must point CMAKE_C/CXX_COMPILER at it.
+    $candidates = @()
+    if ($env:HIP_PATH) {
+        $candidates += Join-Path $env:HIP_PATH "bin"
+        $candidates += $env:HIP_PATH
+    }
+    foreach ($base in @("C:\Program Files\AMD\ROCm",
+                        "C:\Program Files\AMD\ROCm\<version>",
+                        "C:\AMD\ROCm")) {
+        if (Test-Path $base) {
+            $candidates += Join-Path $base "bin"
+            Get-ChildItem $base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $candidates += Join-Path $_.FullName "bin"
+            }
+        }
+    }
+    foreach ($c in $candidates) {
+        if ((Test-Path $c) -and (Test-Path (Join-Path $c "clang.exe"))) {
+            return $c
+        }
+    }
+    return $null
+}
+
+function Get-AmdGfxTarget {
+    # Detect the installed AMD GPU gfx target(s) for HIP builds (e.g. gfx1201).
+    # AMDGPU_TARGETS is deprecated upstream; GPU_TARGETS is the supported name.
+    try {
+        $out = & hipconfig --droc-arch 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return ($out -join ',') }
+    } catch {}
+    try {
+        $out = & rocminfo 2>$null | Select-String -Pattern '^\s*Name:\s*gfx'
+        if ($out) { return (($out -replace '.*Name:\s*', '').Trim() -join ',') }
+    } catch {}
+    return $null
 }
 
 # --- 0. INSTALL DIRECTORY ---
@@ -651,6 +709,61 @@ if ($BuildType -eq "SYCL") {
     }
 }
 
+# --- 6c. HIP / ROCm (only if BuildType = HIP) ---
+$hipClangBin = $null
+$amdGfxTarget = $null
+if ($BuildType -eq "HIP") {
+    Log "Checking AMD HIP SDK"
+
+    # CMake does not support the HIP language on Windows, so ggml-hip builds
+    # via the hipcc/clang compiler. This is fundamentally different from the
+    # VS-generator + MSVC path used by CPU/CUDA/Vulkan — it needs Ninja.
+    $hipClangBin = Resolve-HipClangBin
+    if ($hipClangBin) {
+        Add-ToPath $hipClangBin
+        OK "HIP SDK clang found: $hipClangBin"
+    } else {
+        WARN "AMD HIP SDK (clang/hipcc) not found!"
+        WARN "Install the AMD HIP SDK and set HIP_PATH, or use Vulkan instead."
+        WARN "RDNA4 (Radeon RX 9000) users should choose Vulkan — HIP on Windows"
+        WARN "for gfx1201 is known to be unreliable."
+        exit 1
+    }
+    if (-not (Is-Available "hipcc") -and -not (Is-Available "clang")) {
+        WARN "Neither hipcc nor clang is available from the HIP SDK."
+        exit 1
+    }
+
+    # Ninja is required for the HIP build (no VS generator).
+    if (-not (Is-Available "ninja")) {
+        Log "Installing Ninja (required for HIP build)..."
+        if ($useWinget) {
+            winget install --id Ninja-build.Ninja -e --source winget --accept-source-agreements --accept-package-agreements
+        } elseif ($hasChoco) {
+            choco install ninja -y --no-progress
+        }
+        Refresh-Path
+    }
+    if (-not (Is-Available "ninja")) {
+        WARN "Ninja not found! Required for HIP builds. Install: winget install Ninja-build.Ninja"
+        exit 1
+    }
+    OK "Ninja: $(ninja --version)"
+
+    # Detect the AMD gfx target so we compile for the right GPU.
+    $amdGfxTarget = Get-AmdGfxTarget
+    if ($amdGfxTarget) {
+        OK "AMD GPU target: $amdGfxTarget"
+        if ($amdGfxTarget -match "gfx120[01]") {
+            WARN "Detected RDNA4 (gfx120x). HIP on Windows is unreliable for this"
+            WARN "hardware — Vulkan is strongly recommended. Continuing HIP anyway."
+        }
+    } else {
+        WARN "Could not auto-detect the AMD gfx target. Set -DGPU_TARGETS manually"
+        WARN "via Extra Flags if the build fails (e.g. -DGPU_TARGETS=gfx1201)."
+    }
+}
+
 # --- 7. FINAL CHECK ---
 Log "Final check"
 $allOk = $true
@@ -677,7 +790,19 @@ $existingDir = Get-ChildItem $InstallDir -Directory | Where-Object { $_.Name -ma
 
 if ($existingDir) {
     $dir = $existingDir.FullName
-    OK "Found existing directory: $dir (skipping clone)"
+    if ($Update) {
+        Log "Updating existing checkout: $dir"
+        Push-Location $dir
+        git fetch --all --prune
+        if ($LASTEXITCODE -ne 0) { WARN "git fetch failed"; Pop-Location; exit 1 }
+        git reset --hard "origin/$REPO_BRANCH"
+        if ($LASTEXITCODE -ne 0) { WARN "git reset failed"; Pop-Location; exit 1 }
+        git clean -fdx -e node_modules
+        Pop-Location
+        OK "Updated to latest '$REPO_BRANCH'"
+    } else {
+        OK "Found existing directory: $dir (skipping update)"
+    }
 } else {
     $tmpDir = Join-Path $InstallDir "_tmp_$Source"
     if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
@@ -719,12 +844,12 @@ if ($existingDir) {
 Log "CMake configuration ($BuildType)"
 $buildDir = Join-Path $dir "build"
 
-if (Test-Path $buildDir) {
-    Log "Deleting old build directory..."
+if ($CleanBuild -and (Test-Path $buildDir)) {
+    Log "Deleting old build directory (clean build)..."
     Remove-Item $buildDir -Recurse -Force
 }
 
-# Create build directory
+# Create build directory (if it was removed or never existed)
 New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 
 # If CUDA build and props were copied locally, copy them to build directory
@@ -765,12 +890,13 @@ if ($BuildType -eq "SYCL") {
         "-DCMAKE_CXX_COMPILER=icx",
         "-DGGML_SYCL=ON",
         "-DGGML_SYCL_F16=ON",
-        "-DGGML_NATIVE=OFF", "-DGGML_AVX2=ON", "-DGGML_FMA=ON", "-DGGML_F16C=ON",
+        "-DGGML_NATIVE=ON",
         "-DBUILD_SHARED_LIBS=ON", "-DLLAMA_BUILD_SERVER=ON",
         "-DLLAMA_CURL=OFF", "-DGGML_CCACHE=OFF"
     )
 
     Log "Starting SYCL build: $CMAKE_EXE $($cmakeFlags -join ' ')"
+    if ($extraFlagList.Count -gt 0) { $cmakeFlags += $extraFlagList; Log "Extra flags: $($extraFlagList -join ' ')" }
     & $CMAKE_EXE @cmakeFlags
 
     if ($LASTEXITCODE -ne 0) {
@@ -798,6 +924,52 @@ if ($BuildType -eq "SYCL") {
 
     # --- DONE ---
     Log "BUILD SUCCESSFUL! (SYCL)"
+    $binPath = Join-Path $buildDir "bin"
+    OK "Binaries: $binPath"
+    $exes = Get-ChildItem $binPath -Filter "*.exe" -ErrorAction SilentlyContinue
+    if ($exes) { $exes | ForEach-Object { OK "  $($_.Name)" } }
+    Write-Host "`nStart server:" -ForegroundColor Green
+    Write-Host "  $binPath\llama-server.exe -m <model.gguf> --host 0.0.0.0 --port 8080" -ForegroundColor Green
+    exit 0
+}
+
+# --- HIP builds use Ninja + the AMD HIP SDK clang (NOT the VS generator) ---
+# CMake does not support the HIP language on Windows, so ggml-hip forces the
+# hipcc/clang compiler. Building with the VS generator + MSVC cannot work.
+if ($BuildType -eq "HIP") {
+    $clangExe = Join-Path $hipClangBin "clang.exe"
+    $clangxxExe = Join-Path $hipClangBin "clang++.exe"
+    if (-not (Test-Path $clangxxExe)) {
+        WARN "clang++ not found in $hipClangBin"
+        WARN "Ensure the AMD HIP SDK is fully installed."
+        exit 1
+    }
+
+    $cmakeFlags = @(
+        "-S", $dir, "-B", $buildDir,
+        "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_C_COMPILER=$clangExe",
+        "-DCMAKE_CXX_COMPILER=$clangxxExe",
+        "-DGGML_HIP=ON",
+        "-DGGML_CUDA=OFF",
+        "-DGGML_NATIVE=ON",
+        "-DBUILD_SHARED_LIBS=ON", "-DLLAMA_BUILD_SERVER=ON",
+        "-DLLAMA_CURL=OFF", "-DGGML_CCACHE=OFF"
+    )
+    if ($amdGfxTarget) { $cmakeFlags += "-DGPU_TARGETS=$amdGfxTarget" }
+    if ($extraFlagList.Count -gt 0) { $cmakeFlags += $extraFlagList; Log "Extra flags: $($extraFlagList -join ' ')" }
+
+    Log "Starting HIP build: $CMAKE_EXE $($cmakeFlags -join ' ')"
+    & $CMAKE_EXE @cmakeFlags
+    if ($LASTEXITCODE -ne 0) { WARN "CMake configuration failed! Code: $LASTEXITCODE"; exit 1 }
+    OK "CMake configuration successful (HIP/Ninja)"
+
+    Log "Compiling $Source with HIP using $ParallelJobs jobs..."
+    & $CMAKE_EXE --build $buildDir --parallel $ParallelJobs
+    if ($LASTEXITCODE -ne 0) { WARN "Build failed! Code: $LASTEXITCODE"; exit 1 }
+
+    Log "BUILD SUCCESSFUL! (HIP)"
     $binPath = Join-Path $buildDir "bin"
     OK "Binaries: $binPath"
     $exes = Get-ChildItem $binPath -Filter "*.exe" -ErrorAction SilentlyContinue
@@ -835,11 +1007,13 @@ if ($BuildUi) {
 # Build-specific flags. BUILD_SHARED_LIBS is chosen per backend:
 #  - Vulkan (RDNA4): OFF (matches the proven static recipe)
 #  - CUDA / HIP / CPU: ON
+# GGML_NATIVE=ON lets llama.cpp auto-detect every available CPU ISA
+# (AVX2/AVX512/FMA/F16C/AMX) instead of forcing AVX2-only.
 $cmakeFlags = @(
     "-S", $dir, "-B", $buildDir,
     "-G", $vsGenerator, "-A", "x64",
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DGGML_NATIVE=OFF", "-DGGML_AVX2=ON", "-DGGML_FMA=ON", "-DGGML_F16C=ON",
+    "-DGGML_NATIVE=ON",
     "-DLLAMA_BUILD_SERVER=ON",
     "-DLLAMA_CURL=OFF", "-DGGML_CCACHE=OFF"
 )
@@ -879,13 +1053,18 @@ if ($BuildType -eq "CUDA") {
         $cmakeFlags += @("-DLLAMA_BUILD_UI=ON", "-DLLAMA_USE_PREBUILT_UI=OFF")
     }
 } elseif ($BuildType -eq "HIP") {
-    $cmakeFlags += @("-DGGML_HIP=ON", "-DGGML_CUDA=OFF", "-DBUILD_SHARED_LIBS=ON")
+    # NOTE: HIP on Windows is handled by the dedicated Ninja+clang branch
+    # above (CMake's HIP language is unsupported with the VS generator).
+    # If we get here, something went wrong — fall back to a safe CPU build.
+    WARN "HIP build should have been handled earlier; falling back to CPU."
+    $cmakeFlags += @("-DGGML_CUDA=OFF", "-DGGML_VULKAN=OFF", "-DBUILD_SHARED_LIBS=ON")
 } else {
     # CPU
     $cmakeFlags += @("-DGGML_CUDA=OFF", "-DGGML_VULKAN=OFF", "-DBUILD_SHARED_LIBS=ON")
 }
 
 Log "Starting: $CMAKE_EXE $($cmakeFlags -join ' ')"
+if ($extraFlagList.Count -gt 0) { $cmakeFlags += $extraFlagList; Log "Extra flags: $($extraFlagList -join ' ')" }
 & $CMAKE_EXE @cmakeFlags
 
 if ($LASTEXITCODE -ne 0) {
