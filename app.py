@@ -209,6 +209,7 @@ class BuildAssistantApp(ctk.CTk):
         self.tab_history = ctk.CTkFrame(self.content, fg_color="#0d131d")
         self.tab_sources = ctk.CTkFrame(self.content, fg_color="#0d131d")
         self.tab_profiles = ctk.CTkFrame(self.content, fg_color="#0d131d")
+        self.tab_update = ctk.CTkFrame(self.content, fg_color="#0d131d")
 
         self.views = {
             "Dashboard": self.tab_dashboard,
@@ -218,6 +219,7 @@ class BuildAssistantApp(ctk.CTk):
             "History": self.tab_history,
             "Sources": self.tab_sources,
             "Profiles": self.tab_profiles,
+            "Update": self.tab_update,
         }
         self.nav_buttons = {}
         for row, name in enumerate(self.views):
@@ -246,6 +248,7 @@ class BuildAssistantApp(ctk.CTk):
         self._build_history_tab()
         self._build_sources_tab()
         self._build_profiles_tab()
+        self._build_update_tab()
         self._show_view("Dashboard")
 
     def _show_view(self, name):
@@ -613,6 +616,46 @@ class BuildAssistantApp(ctk.CTk):
         self.edit_profile_flags = self._style_field(ctk.CTkEntry(edit_frame, placeholder_text="-DGGML_CUDA=ON",
                                                                  corner_radius=8, height=36))
         self.edit_profile_flags.pack(padx=20, pady=(5, 15), fill="x")
+
+    # ─── Update Tab ──────────────────────────────────────────────────
+
+    def _build_update_tab(self):
+        frame = self.tab_update
+
+        ctk.CTkLabel(frame, text="Application Update", font=ctk.CTkFont(size=24, weight="bold")).pack(
+            padx=25, pady=(20, 10), anchor="w")
+
+        info_frame = self._card(frame)
+        info_frame.pack(fill="x", padx=25, pady=8)
+
+        ctk.CTkLabel(info_frame, text="Current Version:",
+                      font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=20, pady=(15, 5), anchor="w")
+
+        version = self._get_local_version()
+        self.lbl_app_version = ctk.CTkLabel(info_frame, text=f"v{version}",
+                                             font=ctk.CTkFont(size=16, weight="bold"),
+                                             text_color=GREEN)
+        self.lbl_app_version.pack(padx=20, pady=(0, 5), anchor="w")
+
+        ctk.CTkLabel(info_frame, text="Repository: nextscript/Llama.cpp-Build-Assistant",
+                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+            padx=20, pady=(0, 15), anchor="w")
+
+        btn_frame = self._card(frame)
+        btn_frame.pack(fill="x", padx=25, pady=8)
+
+        self.update_btn = ctk.CTkButton(btn_frame, text="Check for Updates",
+                                         command=self.check_for_updates,
+                                         corner_radius=8, height=42,
+                                         fg_color=BLUE, hover_color=BLUE_HOVER,
+                                         font=ctk.CTkFont(size=14, weight="bold"))
+        self.update_btn.pack(side="left", padx=15, pady=15)
+
+        self.update_status_lbl = ctk.CTkLabel(btn_frame, text="",
+                                               font=ctk.CTkFont(size=13),
+                                               text_color=MUTED)
+        self.update_status_lbl.pack(side="left", padx=10, pady=15)
 
     # ─── Hardware Check ──────────────────────────────────────────────
 
@@ -1370,6 +1413,215 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 messagebox.showinfo("Export", f"Report saved to {path}")
             except Exception as e:
                 messagebox.showerror("Export Error", str(e))
+
+    # ─── Update Logic ────────────────────────────────────────────────
+
+    def _get_local_version(self):
+        version_path = os.path.join(ROOT_DIR, "VERSION")
+        try:
+            with open(version_path, "r") as f:
+                return f.read().strip()
+        except Exception:
+            return "unknown"
+
+    def check_for_updates(self):
+        self.update_btn.configure(state="disabled", text="Checking...")
+        self.update_status_lbl.configure(text="Checking for updates...", text_color=MUTED)
+
+        def _do_check():
+            try:
+                import urllib.request
+                import urllib.error
+
+                api_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=1"
+                req = urllib.request.Request(api_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    commits = json.loads(resp.read().decode())
+
+                if not commits:
+                    self.after(0, lambda: self._update_check_done(False, "No commits found."))
+                    return
+
+                latest_sha = commits[0]["sha"][:8]
+                latest_date = commits[0]["commit"]["committer"]["date"]
+                latest_msg = commits[0]["commit"]["message"].split("\n")[0]
+
+                local_sha = self._get_local_commit_sha()
+
+                if local_sha and latest_sha == local_sha:
+                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                    return
+
+                compare_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/compare/{local_sha}...main" if local_sha else None
+                changed_files = []
+
+                if compare_url:
+                    try:
+                        req2 = urllib.request.Request(compare_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                        with urllib.request.urlopen(req2, timeout=15) as resp2:
+                            compare_data = json.loads(resp2.read().decode())
+                            changed_files = [f["filename"] for f in compare_data.get("files", [])]
+                    except Exception:
+                        changed_files = []
+
+                if not changed_files:
+                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                    return
+
+                self.after(0, lambda: self._show_update_modal(latest_sha, latest_date, latest_msg, changed_files))
+
+            except Exception as e:
+                self.after(0, lambda: self._update_check_done(False, f"Error: {e}"))
+
+        threading.Thread(target=_do_check, daemon=True).start()
+
+    def _get_local_commit_sha(self):
+        try:
+            git_dir = os.path.join(ROOT_DIR, ".git")
+            head_path = os.path.join(git_dir, "HEAD")
+            if not os.path.exists(head_path):
+                return None
+            with open(head_path, "r") as f:
+                head_content = f.read().strip()
+            if head_content.startswith("ref:"):
+                ref_path = os.path.join(git_dir, head_content[5:])
+                if os.path.exists(ref_path):
+                    with open(ref_path, "r") as f:
+                        return f.read().strip()[:8]
+            return head_content[:8]
+        except Exception:
+            return None
+
+    def _update_check_done(self, has_update, msg):
+        self.update_btn.configure(state="normal", text="Check for Updates")
+        color = GREEN if has_update else MUTED
+        self.update_status_lbl.configure(text=msg, text_color=color)
+
+    def _show_update_modal(self, latest_sha, latest_date, latest_msg, changed_files):
+        self.update_btn.configure(state="normal", text="Check for Updates")
+        self.update_status_lbl.configure(text="Update available!", text_color=GREEN)
+
+        modal = ctk.CTkToplevel(self)
+        modal.title("Application Update")
+        modal.geometry("700x550")
+        modal.configure(fg_color=BG)
+        modal.resizable(False, False)
+        modal.transient(self)
+        modal.grab_set()
+
+        ctk.CTkLabel(modal, text="Update Available",
+                      font=ctk.CTkFont(size=20, weight="bold"),
+                      text_color=GREEN).pack(pady=(20, 5))
+
+        info_frame = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
+        info_frame.pack(fill="x", padx=20, pady=8)
+
+        ctk.CTkLabel(info_frame, text=f"Date: {latest_date}",
+                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+            padx=15, pady=(10, 2), anchor="w")
+        ctk.CTkLabel(info_frame, text=f"Message: {latest_msg}",
+                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+            padx=15, pady=(2, 10), anchor="w")
+
+        files_frame = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
+        files_frame.pack(fill="both", expand=True, padx=20, pady=8)
+
+        ctk.CTkLabel(files_frame, text=f"Changed Files ({len(changed_files)}):",
+                      font=ctk.CTkFont(size=14, weight="bold"), text_color=TEXT).pack(
+            padx=15, pady=(10, 5), anchor="w")
+
+        log_text = ctk.CTkTextbox(files_frame, font=ctk.CTkFont(size=11), corner_radius=8,
+                                   fg_color="#070b11", text_color="#c7f89a",
+                                   border_color=BORDER, border_width=1,
+                                   scrollbar_button_color="#334155",
+                                   scrollbar_button_hover_color="#475569")
+        log_text.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+
+        for f in changed_files:
+            log_text.insert("end", f"  {f}\n")
+        log_text.see("1.0")
+
+        btn_frame = ctk.CTkFrame(modal, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(5, 15))
+
+        download_btn = ctk.CTkButton(btn_frame, text="Download & Install Update",
+                                      corner_radius=8, height=42,
+                                      fg_color=BLUE, hover_color=BLUE_HOVER,
+                                      font=ctk.CTkFont(size=14, weight="bold"))
+
+        cancel_btn = ctk.CTkButton(btn_frame, text="Cancel",
+                                    corner_radius=8, height=42,
+                                    fg_color=SURFACE, hover_color="#172235",
+                                    border_width=1, border_color=BORDER,
+                                    text_color=TEXT,
+                                    font=ctk.CTkFont(size=14, weight="bold"),
+                                    command=modal.destroy)
+        cancel_btn.pack(side="right", padx=5)
+
+        def do_download():
+            download_btn.configure(state="disabled", text="Downloading...")
+            cancel_btn.configure(state="disabled")
+            log_text.delete("1.0", "end")
+
+            def _download_worker():
+                import urllib.request
+                import base64
+
+                total = len(changed_files)
+                success_count = 0
+                fail_count = 0
+
+                for i, filename in enumerate(changed_files, 1):
+                    self.after(0, lambda fn=filename, idx=i: log_text.insert("end", f"[{idx}/{total}] Downloading: {fn}...\n"))
+                    self.after(0, lambda: log_text.see("end"))
+
+                    try:
+                        file_api = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/{filename}?ref=main"
+                        req = urllib.request.Request(file_api, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
+
+                        with urllib.request.urlopen(req, timeout=30) as resp:
+                            content = resp.read()
+
+                        local_path = os.path.join(ROOT_DIR, filename)
+                        local_dir = os.path.dirname(local_path)
+                        if not os.path.exists(local_dir):
+                            os.makedirs(local_dir, exist_ok=True)
+
+                        with open(local_path, "wb") as f:
+                            f.write(content)
+
+                        success_count += 1
+                        self.after(0, lambda fn=filename: log_text.insert("end", f"  -> OK: {fn}\n"))
+                        self.after(0, lambda: log_text.see("end"))
+
+                    except Exception as e:
+                        fail_count += 1
+                        self.after(0, lambda fn=filename, err=e: log_text.insert("end", f"  -> FAILED: {fn} ({err})\n"))
+                        self.after(0, lambda: log_text.see("end"))
+
+                    time.sleep(0.2)
+
+                self.after(0, lambda: log_text.insert("end", "\n" + "=" * 50 + "\n"))
+                self.after(0, lambda: log_text.insert("end", f"Update complete: {success_count} succeeded, {fail_count} failed.\n"))
+                self.after(0, lambda: log_text.insert("end", "\nPlease restart the application to apply changes.\n"))
+                self.after(0, lambda: log_text.see("end"))
+
+                self.after(0, lambda: download_btn.configure(state="normal", text="Restart Now",
+                                                              command=lambda: self._restart_app(modal)))
+                self.after(0, lambda: cancel_btn.configure(state="normal", text="Close"))
+
+            threading.Thread(target=_download_worker, daemon=True).start()
+
+        download_btn.configure(command=do_download)
+        download_btn.pack(side="right", padx=5)
+
+    def _restart_app(self, modal):
+        import sys
+        modal.destroy()
+        self.destroy()
+        python = sys.executable
+        script = os.path.abspath(sys.argv[0])
+        os.execl(python, python, script)
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────
