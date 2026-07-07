@@ -4,3 +4,4 @@ py-cpuinfo>=9.0.0
 GPUtil>=1.4.0
 packaging>=23.0
 rich>=13.0.0
+setuptools>=68.0.0  # provides the distutils shim that GPUtil still imports (removed from stdlib in Python 3.12+)

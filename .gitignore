@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
+# Project virtualenv (created by python_manager.py)
+.venv/
+.python-interpreter
+
 # Build outputs and toolchain downloads
 builds/
 deps/
