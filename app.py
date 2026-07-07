@@ -179,12 +179,6 @@ class BuildAssistantApp(ctk.CTk):
         status_label.pack(side="left", padx=22, pady=15)
         self.status_label = status_label
 
-        self._primary_button(top_frame, "Start Build", self.start_build, width=150).pack(
-            side="right", padx=(10, 18), pady=12)
-        self._secondary_button(top_frame, "Check Dependencies", self.check_dependencies, width=170).pack(
-            side="right", padx=6, pady=12)
-        self._secondary_button(top_frame, "Run System Check", self.run_hardware_check, width=160).pack(
-            side="right", padx=6, pady=12)
 
         # ── Tabview ──
         body = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)

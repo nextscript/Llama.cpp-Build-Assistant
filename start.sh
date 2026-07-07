@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================"
-echo " Llama.cpp Build Assistant (v0.2.1)"
+echo " Llama.cpp Build Assistant (v0.2.2)"
 echo "========================================"
 echo ""
 
