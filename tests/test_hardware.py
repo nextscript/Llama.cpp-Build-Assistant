@@ -65,3 +65,7 @@ class TestRecommendation:
     def test_cpu_fallback(self):
         report = self._report()
         assert hw.get_recommendation(report) == "CPU"
+
+    def test_macos_report_uses_metal(self):
+        report = {"os": "macOS 15.0", "gpu": {"metal_available": True}}
+        assert hw.get_recommendation(report) == "Metal"
