@@ -1595,12 +1595,38 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             def _download_worker():
                 import urllib.request
                 import base64
+                import json
 
-                total = len(changed_files)
+                files_to_download = list(changed_files)
+
+                if "(see commit history)" in files_to_download:
+                    self.after(0, lambda: log_text.insert("end", "Could not determine changed files, fetching full file list...\n"))
+                    self.after(0, lambda: log_text.see("end"))
+                    try:
+                        tree_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/git/trees/main?recursive=1"
+                        req_tree = urllib.request.Request(tree_url, headers={
+                            "User-Agent": "LlamaCppBuildAssistant",
+                            "Accept": "application/vnd.github.v3+json"
+                        })
+                        with urllib.request.urlopen(req_tree, timeout=30) as resp:
+                            tree_data = json.loads(resp.read().decode("utf-8"))
+                        files_to_download = [
+                            item["path"] for item in tree_data.get("tree", [])
+                            if item["type"] == "blob"
+                        ]
+                    except Exception as e:
+                        self.after(0, lambda err=e: log_text.insert("end", f"Failed to fetch file list: {err}\n"))
+                        self.after(0, lambda: log_text.see("end"))
+                        self.after(0, lambda: download_btn.configure(state="normal", text="Retry",
+                                                                      command=do_download))
+                        self.after(0, lambda: cancel_btn.configure(state="normal", text="Close"))
+                        return
+
+                total = len(files_to_download)
                 success_count = 0
                 fail_count = 0
 
-                for i, filename in enumerate(changed_files, 1):
+                for i, filename in enumerate(files_to_download, 1):
                     self.after(0, lambda fn=filename, idx=i: log_text.insert("end", f"[{idx}/{total}] Downloading: {fn}...\n"))
                     self.after(0, lambda: log_text.see("end"))
 

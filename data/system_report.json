@@ -1,12 +1,10 @@
 {
-  "os": "Windows 10 IoT Enterprise LTSC 2021 10.0.19044",
+  "os": "Windows 10 IoTEnterpriseS 21H2 build 19044",
   "cpu": {
     "name": "AMD Ryzen 7 5800X3D 8-Core Processor",
     "cores": 16,
     "threads": 16,
-    "features": [
-      "AVX"
-    ]
+    "features": []
   },
   "ram": {
     "total_gb": 63.9,
@@ -23,6 +21,7 @@
     "has_nvidia": true,
     "has_amd": false,
     "has_intel": false,
+    "has_apple": false,
     "nvidia_driver_version": "595.97",
     "cuda_available": true,
     "cuda_version": "V12.6.20",
@@ -30,8 +29,9 @@
     "vulkan_sdk": false,
     "opencl_available": false,
     "rocm_available": false,
-    "sycl_available": false
+    "sycl_available": false,
+    "metal_available": false
   },
-  "free_disk_gb": 145.6,
-  "timestamp": "2026-07-06T23:44:28.093802"
+  "free_disk_gb": 152.9,
+  "timestamp": "2026-07-07T20:38:20.452146"
 }
