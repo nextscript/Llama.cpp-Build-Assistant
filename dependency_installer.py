@@ -8,6 +8,7 @@ No installation without user confirmation.
 import subprocess
 import platform
 import os
+import shlex
 import shutil
 from config import INSTALL_LOG_FILE
 from logger import log_install, log_error
@@ -43,6 +44,57 @@ def run_command(cmd, timeout=300):
         return False, "", "Timeout"
     except Exception as e:
         return False, "", str(e)
+
+
+def run_privileged(cmd, timeout=300):
+    """Run a command that needs root privileges (Linux).
+
+    GUI apps cannot safely use plain ``sudo``: when there is no usable TTY the
+    password prompt is hidden or sudo fails with "a password is required" / "no
+    tty present". Prefer an already-authenticated sudo session, otherwise use
+    ``pkexec`` so polkit can show a native authentication dialog. If neither is
+    possible, fail loudly and show an exact terminal command instead of silently
+    skipping the dependency.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid and geteuid() == 0:
+        return run_command(cmd, timeout=timeout)
+
+    sudo = shutil.which("sudo")
+    if sudo:
+        try:
+            cached = subprocess.run(
+                [sudo, "-n", "true"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).returncode == 0
+        except Exception:
+            cached = False
+
+        if cached:
+            return run_command(
+                f"{shlex.quote(sudo)} -n sh -c {shlex.quote(cmd)}",
+                timeout=timeout,
+            )
+
+    pkexec = shutil.which("pkexec")
+    if pkexec:
+        # pkexec authenticates via a GUI dialog, then runs the command as root.
+        return run_command(
+            f"{shlex.quote(pkexec)} sh -c {shlex.quote(cmd)}",
+            timeout=timeout,
+        )
+
+    manual_cmd = f"sudo sh -c {shlex.quote(cmd)}"
+    return (
+        False,
+        "",
+        "Root privileges are required, but automatic authentication is not "
+        "available (no cached sudo session and pkexec was not found).\n"
+        "Please run this command in a terminal, then re-run the dependency "
+        f"check:\n  {manual_cmd}",
+    )
 
 
 def has_winget():
@@ -83,13 +135,13 @@ def install_git():
     elif system == "Linux":
         pm = get_linux_package_manager()
         if pm == "apt":
-            return run_command("sudo apt update && sudo apt install -y git")
+            return run_privileged("apt update && apt install -y git")
         elif pm == "dnf":
-            return run_command("sudo dnf install -y git")
+            return run_privileged("dnf install -y git")
         elif pm == "pacman":
-            return run_command("sudo pacman -Syu --needed git --noconfirm")
+            return run_privileged("pacman -Syu --needed git --noconfirm")
         elif pm == "zypper":
-            return run_command("sudo zypper install -y git")
+            return run_privileged("zypper install -y git")
     return False, "", "No supported package manager"
 
 
@@ -106,13 +158,13 @@ def install_cmake():
     elif system == "Linux":
         pm = get_linux_package_manager()
         if pm == "apt":
-            return run_command("sudo apt install -y cmake")
+            return run_privileged("apt install -y cmake")
         elif pm == "dnf":
-            return run_command("sudo dnf install -y cmake")
+            return run_privileged("dnf install -y cmake")
         elif pm == "pacman":
-            return run_command("sudo pacman -Syu --needed cmake --noconfirm")
+            return run_privileged("pacman -Syu --needed cmake --noconfirm")
         elif pm == "zypper":
-            return run_command("sudo zypper install -y cmake")
+            return run_privileged("zypper install -y cmake")
     return False, "", "No supported package manager"
 
 
@@ -129,13 +181,13 @@ def install_ninja():
     elif system == "Linux":
         pm = get_linux_package_manager()
         if pm == "apt":
-            return run_command("sudo apt install -y ninja-build")
+            return run_privileged("apt install -y ninja-build")
         elif pm == "dnf":
-            return run_command("sudo dnf install -y ninja-build")
+            return run_privileged("dnf install -y ninja-build")
         elif pm == "pacman":
-            return run_command("sudo pacman -Syu --needed ninja --noconfirm")
+            return run_privileged("pacman -Syu --needed ninja --noconfirm")
         elif pm == "zypper":
-            return run_command("sudo zypper install -y ninja")
+            return run_privileged("zypper install -y ninja")
     return False, "", "No supported package manager"
 
 
@@ -181,9 +233,9 @@ def install_vulkan_sdk():
     elif system == "Linux":
         pm = get_linux_package_manager()
         if pm == "apt":
-            return run_command("sudo apt install -y vulkan-sdk")
+            return run_privileged("apt install -y vulkan-sdk")
         elif pm == "pacman":
-            return run_command("sudo pacman -Syu --needed vulkan-icd-loader --noconfirm")
+            return run_privileged("pacman -Syu --needed vulkan-icd-loader --noconfirm")
     return False, "", "Vulkan SDK installation is complex. Please visit https://vulkan.lunarg.com/"
 
 
@@ -200,9 +252,9 @@ def install_intel_oneapi():
     elif system == "Linux":
         pm = get_linux_package_manager()
         if pm == "apt":
-            return run_command("sudo apt install -y intel-oneapi-compiler-dpcpp-cpp")
+            return run_privileged("apt install -y intel-oneapi-compiler-dpcpp-cpp")
         elif pm == "dnf":
-            return run_command("sudo dnf install -y intel-oneapi-compiler-dpcpp-cpp")
+            return run_privileged("dnf install -y intel-oneapi-compiler-dpcpp-cpp")
     
     return False, "", "Intel oneAPI installation requires manual setup. Please visit https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit-download.html"
 
@@ -230,13 +282,13 @@ def install_compiler():
     elif system == "Linux":
         pm = get_linux_package_manager()
         if pm == "apt":
-            return run_command("sudo apt install -y build-essential")
+            return run_privileged("apt install -y build-essential")
         elif pm == "dnf":
-            return run_command("sudo dnf install -y gcc gcc-c++ make")
+            return run_privileged("dnf install -y gcc gcc-c++ make")
         elif pm == "pacman":
-            return run_command("sudo pacman -Syu --needed base-devel --noconfirm")
+            return run_privileged("pacman -Syu --needed base-devel --noconfirm")
         elif pm == "zypper":
-            return run_command("sudo zypper install -y gcc gcc-c++ make")
+            return run_privileged("zypper install -y gcc gcc-c++ make")
     return False, "", "No supported package manager"
 
 
@@ -282,7 +334,10 @@ def install_missing(missing_deps, callback=None):
         log_install(f"  {dep}: {'OK' if success else 'FAILED'} - {msg}")
 
         if callback:
-            callback(f"{dep}: {'OK' if success else 'FAILED'}")
+            if success:
+                callback(f"{dep}: OK")
+            else:
+                callback(f"{dep}: FAILED - {msg}")
 
     return results
 
