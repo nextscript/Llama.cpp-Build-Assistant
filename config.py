@@ -194,6 +194,15 @@ DEFAULT_BUILD_PROFILES = [
         "clean_build": True,
         "update_repo": True,
         "test_after_build": False
+    },
+    {
+        "name": "Metal macOS",
+        "source": "main",
+        "build_type": "Metal",
+        "cmake_flags": ["-DGGML_METAL=ON", "-DGGML_METAL_EMBED_LIBRARY=ON"],
+        "clean_build": True,
+        "update_repo": True,
+        "test_after_build": False
     }
 ]
 
@@ -210,7 +219,8 @@ BUILD_TYPE_FLAGS = {
     "CUDA": "-DGGML_CUDA=ON",
     "Vulkan": "-DGGML_VULKAN=ON",
     "HIP": "-DGGML_HIP=ON",
-    "SYCL": "-DGGML_SYCL=ON"
+    "SYCL": "-DGGML_SYCL=ON",
+    "Metal": "-DGGML_METAL=ON"
 }
 
 # Build type display names
@@ -219,8 +229,9 @@ BUILD_TYPE_DISPLAY = {
     "CUDA": "CUDA",
     "Vulkan": "Vulkan",
     "HIP": "HIP/ROCm",
-    "SYCL": "SYCL (Intel)"
+    "SYCL": "SYCL (Intel)",
+    "Metal": "Metal (macOS)"
 }
 
 # Build types list
-BUILD_TYPES = ["CPU", "CUDA", "Vulkan", "HIP", "SYCL"]
+BUILD_TYPES = ["CPU", "CUDA", "Vulkan", "HIP", "SYCL", "Metal"]

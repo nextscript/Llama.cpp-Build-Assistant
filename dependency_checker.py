@@ -4,6 +4,7 @@ Checks whether required programs are installed and available in PATH.
 """
 import subprocess
 import shutil
+import os
 import platform
 from config import REQUIRED_FOR_ALL, REQUIRED_FOR_CUDA, REQUIRED_FOR_VULKAN, REQUIRED_FOR_HIP, REQUIRED_FOR_SYCL
 
@@ -48,12 +49,31 @@ def check_compiler():
     system = platform.system()
 
     if system == "Windows":
-        # Check MSVC
+        # Check MSVC in PATH first.
         cl_path = shutil.which("cl")
         if cl_path:
             return {"found": True, "name": "MSVC (cl)", "path": cl_path}
-        # Check if VS Build Tools is installed via winget
-        import subprocess
+
+        # Otherwise ask vswhere whether the VC++ tools workload is actually
+        # installed (vswhere.exe itself exists even without C++ tools, so its
+        # mere presence is NOT proof of a usable compiler).
+        vswhere = shutil.which("vswhere") or \
+            r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+        if os.path.isfile(vswhere):
+            try:
+                result = subprocess.run(
+                    [vswhere, "-latest", "-products", "*",
+                     "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                     "-property", "displayName"],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return {"found": True,
+                            "name": f"MSVC via {result.stdout.strip().splitlines()[0]} (cl not in PATH)",
+                            "path": "Run from a Visual Studio Developer Command Prompt"}
+            except Exception:
+                pass
+        # Last-resort heuristic: winget-reported Build Tools (unverified).
         try:
             result = subprocess.run(
                 ["winget", "list", "--id", "Microsoft.VisualStudio.2022.BuildTools"],
@@ -64,10 +84,6 @@ def check_compiler():
                         "path": "Run from VS Developer Command Prompt or add to PATH"}
         except Exception:
             pass
-        # Check if vswhere is available
-        vswhere = shutil.which("vswhere")
-        if vswhere:
-            return {"found": True, "name": "VS Build Tools detected (cl not in PATH)", "path": vswhere}
         return {"found": False, "name": "MSVC", "path": None}
     else:
         # Check GCC

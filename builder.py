@@ -165,15 +165,11 @@ def generate_cmake_command(source, build_type, custom_flags=None, clean_build=Fa
     if not generator_flags and not any("-DCMAKE_BUILD_TYPE" in f for f in flags):
         flags.insert(0, "-DCMAKE_BUILD_TYPE=Release")
 
-    # Add recommended flags for llama.cpp
+    # Add recommended flags for llama.cpp. GGML_NATIVE=ON lets llama.cpp's
+    # own CPUID detection enable AVX2/AVX512/FMA/F16C/AMX automatically; do
+    # NOT hard-code AVX2/FMA/F16C here (that disables AVX512/AMX).
     if not any("-DGGML_NATIVE" in f for f in flags):
-        flags.append("-DGGML_NATIVE=OFF")
-    if not any("-DGGML_AVX2" in f for f in flags):
-        flags.append("-DGGML_AVX2=ON")
-    if not any("-DGGML_FMA" in f for f in flags):
-        flags.append("-DGGML_FMA=ON")
-    if not any("-DGGML_F16C" in f for f in flags):
-        flags.append("-DGGML_F16C=ON")
+        flags.append("-DGGML_NATIVE=ON")
 
     # Build command as list (important for generator with spaces)
     cmd_parts = ["cmake", "-S", repo_path, "-B", build_path]
@@ -232,6 +228,11 @@ def run_build(source_id, build_type, update_repo_flag=False,
         return False, [msg], msg, []
 
     system = platform.system()
+
+    # Custom CMake flags are passed as a newline-joined string so that flags
+    # may contain spaces (e.g. -DCMAKE_PREFIX_PATH=...) without quoting issues.
+    flags_str = "\n".join(custom_flags) if custom_flags else ""
+
     if system == "Windows":
         script_path = os.path.join(ROOT_DIR, "build_llamacpp.ps1")
         if not os.path.exists(script_path):
@@ -239,14 +240,18 @@ def run_build(source_id, build_type, update_repo_flag=False,
             if callback:
                 callback(msg)
             return False, [msg], msg, []
-        ui_arg = " -BuildUi" if build_ui else ""
-        cmd = [
-            "powershell.exe",
-            "-ExecutionPolicy", "Bypass",
-            "-Command",
-            f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-            f"& '{script_path}' -Source '{source_id}' -BuildType '{build_type}'{ui_arg}"
-        ]
+        # Use -File (not -Command) so args are bound cleanly and there are no
+        # quoting headaches around -ExtraFlags / build paths.
+        cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script_path,
+               "-Source", source_id, "-BuildType", build_type]
+        if update_repo_flag:
+            cmd.append("-Update")
+        if clean_build:
+            cmd.append("-CleanBuild")
+        if build_ui:
+            cmd.append("-BuildUi")
+        if flags_str:
+            cmd += ["-ExtraFlags", flags_str]
         encoding = 'latin-1'
     else:
         script_path = os.path.join(ROOT_DIR, "build_llamacpp.sh")
@@ -255,8 +260,15 @@ def run_build(source_id, build_type, update_repo_flag=False,
             if callback:
                 callback(msg)
             return False, [msg], msg, []
-        ui_arg = " -u" if build_ui else ""
-        cmd = ["bash", script_path, "-s", source_id, "-t", build_type] + (["-u"] if build_ui else [])
+        cmd = ["bash", script_path, "-s", source_id, "-t", build_type]
+        if update_repo_flag:
+            cmd.append("-U")
+        if clean_build:
+            cmd.append("-c")
+        if build_ui:
+            cmd.append("-u")
+        if flags_str:
+            cmd += ["-F", flags_str]
         encoding = 'utf-8'
 
     if callback:
