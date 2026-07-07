@@ -6,8 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+VERSION="$(cat "$SCRIPT_DIR/VERSION")"
+
 echo "========================================"
-echo " Llama.cpp Build Assistant (v0.2.2)"
+echo " Llama.cpp Build Assistant (v${VERSION})"
 echo "========================================"
 echo ""
 

@@ -1477,8 +1477,8 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
                 self.after(0, lambda: self._show_update_modal(local_version, remote_version, changed_files, commit_msg))
 
-            except Exception as e:
-                self.after(0, lambda: self._update_check_done(False, f"Error: {e}"))
+            except Exception:
+                self.after(0, lambda: self._update_check_done(False, "Update check failed"))
 
         threading.Thread(target=_do_check, daemon=True).start()
 

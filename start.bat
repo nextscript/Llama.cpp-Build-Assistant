@@ -5,8 +5,10 @@ setlocal enableextensions
 cd /d "%~dp0"
 set "SCRIPT_DIR=%~dp0"
 
+set /p VERSION=<"%SCRIPT_DIR%VERSION"
+
 echo ========================================
-echo  Llama.cpp Build Assistant (v0.2.2)
+echo  Llama.cpp Build Assistant (v%VERSION%)
 echo ========================================
 echo.
 
