@@ -49,6 +49,8 @@ GREEN = "#7bd45a"
 DANGER = "#dc2626"
 DANGER_HOVER = "#b91c1c"
 
+GITHUB_TOKEN = "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"
+
 
 # ─── Main Application ───────────────────────────────────────────────
 
@@ -1443,6 +1445,11 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
+                api_headers = {
+                    "User-Agent": "LlamaCppBuildAssistant",
+                    "Authorization": f"token {GITHUB_TOKEN}"
+                }
+
                 local_sha = None
                 try:
                     result = subprocess.run(
@@ -1455,7 +1462,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                     pass
 
                 version_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/VERSION?ref=main"
-                req_ver = urllib.request.Request(version_url, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
+                req_ver = urllib.request.Request(version_url, headers={**api_headers, "Accept": "application/vnd.github.v3.raw"})
                 try:
                     with urllib.request.urlopen(req_ver, timeout=15, context=ssl_context) as resp_ver:
                         remote_version = resp_ver.read().decode().strip()
@@ -1471,51 +1478,37 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                     self.after(0, lambda: self._update_check_done(False, "Up to date."))
                     return
 
-                commits_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=30"
-                req_commits = urllib.request.Request(commits_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                try:
-                    with urllib.request.urlopen(req_commits, timeout=15, context=ssl_context) as resp_commits:
-                        all_commits = json.loads(resp_commits.read().decode())
-                except urllib.error.HTTPError as e:
-                    if e.code == 403:
-                        self.after(0, lambda: self._update_check_done(False, "Up to date."))
-                        return
-                    raise
-
-                new_commits = []
-                if local_sha:
-                    for c in all_commits:
-                        if c["sha"] == local_sha:
-                            break
-                        new_commits.append(c)
-                else:
-                    new_commits = all_commits[:5]
-
-                version_commits = [c for c in new_commits if remote_version in c["commit"]["message"]]
-
-                if not version_commits:
-                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
-                    return
-
                 changed_files = []
-                seen = set()
-                for c in version_commits:
-                    sha = c["sha"]
-                    c_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/{sha}"
-                    req_c = urllib.request.Request(c_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                    try:
-                        with urllib.request.urlopen(req_c, timeout=15, context=ssl_context) as resp_c:
-                            c_data = json.loads(resp_c.read().decode())
-                            for f in c_data.get("files", []):
-                                if f["filename"] not in seen:
-                                    seen.add(f["filename"])
-                                    changed_files.append(f["filename"])
-                    except urllib.error.HTTPError as e:
-                        if e.code == 403:
-                            break
-                        raise
+                commit_msg = f"Update to v{remote_version}"
 
-                commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
+                if local_sha:
+                    compare_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/compare/{local_sha}...main"
+                    req_compare = urllib.request.Request(compare_url, headers=api_headers)
+                    try:
+                        with urllib.request.urlopen(req_compare, timeout=15, context=ssl_context) as resp_compare:
+                            compare_data = json.loads(resp_compare.read().decode())
+
+                        if compare_data.get("status") == "identical":
+                            self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                            return
+
+                        commits = compare_data.get("commits", [])
+                        files = compare_data.get("files", [])
+
+                        version_commits = [c for c in commits if remote_version in c["commit"]["message"]]
+                        
+                        if version_commits:
+                            commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
+                        
+                        changed_files = list(set(f["filename"] for f in files))
+                        
+                    except urllib.error.HTTPError as e:
+                        if e.code == 403 or e.code == 404:
+                            changed_files = ["(see commit history)"]
+                        else:
+                            raise
+                else:
+                    changed_files = ["(see commit history)"]
 
                 if not changed_files:
                     changed_files = ["(see commit history)"]
@@ -1616,7 +1609,11 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
 
                     try:
                         file_api = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/{filename}?ref=main"
-                        req = urllib.request.Request(file_api, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
+                        req = urllib.request.Request(file_api, headers={
+                            "User-Agent": "LlamaCppBuildAssistant",
+                            "Authorization": f"token {GITHUB_TOKEN}",
+                            "Accept": "application/vnd.github.v3.raw"
+                        })
 
                         with urllib.request.urlopen(req, timeout=30) as resp:
                             content = resp.read()
