@@ -6,7 +6,7 @@ cd /d "%~dp0"
 set "SCRIPT_DIR=%~dp0"
 
 echo ========================================
-echo  Llama.cpp Build Assistant (v0.2.0)
+echo  Llama.cpp Build Assistant (v0.2.1)
 echo ========================================
 echo.
 
