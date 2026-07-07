@@ -1,6 +1,6 @@
 """
 Llama.cpp Build Assistant — Main GUI Application
-Uses CustomTkinter for a modern dark-themed interface.
+Uses CustomTkinter for a modern dark-themed interface..
 """
 import customtkinter as ctk
 from tkinter import messagebox
