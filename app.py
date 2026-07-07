@@ -1454,73 +1454,71 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 except Exception:
                     pass
 
-                commits_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/main"
-                req = urllib.request.Request(commits_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                with urllib.request.urlopen(req, timeout=15, context=ssl_context) as resp:
-                    remote_commit = json.loads(resp.read().decode())
-                    remote_sha = remote_commit["sha"]
-
-                if local_sha and local_sha == remote_sha:
-                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
-                    return
-
                 version_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/VERSION?ref=main"
                 req_ver = urllib.request.Request(version_url, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
-                with urllib.request.urlopen(req_ver, timeout=15, context=ssl_context) as resp_ver:
-                    remote_version = resp_ver.read().decode().strip()
+                try:
+                    with urllib.request.urlopen(req_ver, timeout=15, context=ssl_context) as resp_ver:
+                        remote_version = resp_ver.read().decode().strip()
+                except urllib.error.HTTPError as e:
+                    if e.code == 403:
+                        self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                        return
+                    raise
 
                 local_version = self._get_local_version()
 
-                changed_files = []
-                commit_msg = ""
-                version_commits = []
+                if self._parse_version(remote_version) <= self._parse_version(local_version):
+                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                    return
 
+                commits_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=30"
+                req_commits = urllib.request.Request(commits_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                try:
+                    with urllib.request.urlopen(req_commits, timeout=15, context=ssl_context) as resp_commits:
+                        all_commits = json.loads(resp_commits.read().decode())
+                except urllib.error.HTTPError as e:
+                    if e.code == 403:
+                        self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                        return
+                    raise
+
+                new_commits = []
                 if local_sha:
+                    for c in all_commits:
+                        if c["sha"] == local_sha:
+                            break
+                        new_commits.append(c)
+                else:
+                    new_commits = all_commits[:5]
+
+                version_commits = [c for c in new_commits if remote_version in c["commit"]["message"]]
+
+                if not version_commits:
+                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                    return
+
+                changed_files = []
+                seen = set()
+                for c in version_commits:
+                    sha = c["sha"]
+                    c_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/{sha}"
+                    req_c = urllib.request.Request(c_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
                     try:
-                        compare_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/compare/{local_sha}...main"
-                        req2 = urllib.request.Request(compare_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                        with urllib.request.urlopen(req2, timeout=15, context=ssl_context) as resp2:
-                            compare_data = json.loads(resp2.read().decode())
-
-                        if compare_data.get("status") == "identical":
-                            self.after(0, lambda: self._update_check_done(False, "Up to date."))
-                            return
-
-                        all_new_commits = compare_data.get("commits", [])
-                        version_commits = [c for c in all_new_commits if remote_version in c["commit"]["message"]]
-
-                    except urllib.error.HTTPError as e:
-                        if e.code == 404:
-                            commits_list_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=20"
-                            req3 = urllib.request.Request(commits_list_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                            with urllib.request.urlopen(req3, timeout=15, context=ssl_context) as resp3:
-                                recent_commits = json.loads(resp3.read().decode())
-
-                            new_commits = []
-                            for c in recent_commits:
-                                if c["sha"] == local_sha:
-                                    break
-                                new_commits.append(c)
-
-                            version_commits = [c for c in new_commits if remote_version in c["commit"]["message"]]
-
-                if version_commits:
-                    seen = set()
-                    for c in version_commits:
-                        sha = c["sha"]
-                        c_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/{sha}"
-                        req4 = urllib.request.Request(c_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                        with urllib.request.urlopen(req4, timeout=15, context=ssl_context) as resp4:
-                            c_data = json.loads(resp4.read().decode())
+                        with urllib.request.urlopen(req_c, timeout=15, context=ssl_context) as resp_c:
+                            c_data = json.loads(resp_c.read().decode())
                             for f in c_data.get("files", []):
                                 if f["filename"] not in seen:
                                     seen.add(f["filename"])
                                     changed_files.append(f["filename"])
-                    commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
+                    except urllib.error.HTTPError as e:
+                        if e.code == 403:
+                            break
+                        raise
+
+                commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
 
                 if not changed_files:
-                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
-                    return
+                    changed_files = ["(see commit history)"]
 
                 self.after(0, lambda: self._show_update_modal(local_version, remote_version, changed_files, commit_msg))
 
