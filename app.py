@@ -1422,7 +1422,14 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             with open(version_path, "r") as f:
                 return f.read().strip()
         except Exception:
-            return "unknown"
+            return "0.0.0"
+
+    def _parse_version(self, version_str):
+        try:
+            parts = version_str.strip().split(".")
+            return tuple(int(p) for p in parts)
+        except Exception:
+            return (0, 0, 0)
 
     def check_for_updates(self):
         self.update_btn.configure(state="disabled", text="Checking...")
@@ -1433,71 +1440,46 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 import urllib.request
                 import urllib.error
 
-                api_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=1"
-                req = urllib.request.Request(api_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                version_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/contents/VERSION?ref=main"
+                req = urllib.request.Request(version_url, headers={"User-Agent": "LlamaCppBuildAssistant", "Accept": "application/vnd.github.v3.raw"})
                 with urllib.request.urlopen(req, timeout=15) as resp:
-                    commits = json.loads(resp.read().decode())
+                    remote_version = resp.read().decode().strip()
 
-                if not commits:
-                    self.after(0, lambda: self._update_check_done(False, "No commits found."))
-                    return
+                local_version = self._get_local_version()
 
-                latest_sha = commits[0]["sha"][:8]
-                latest_date = commits[0]["commit"]["committer"]["date"]
-                latest_msg = commits[0]["commit"]["message"].split("\n")[0]
-
-                local_sha = self._get_local_commit_sha()
-
-                if local_sha and latest_sha == local_sha:
+                if self._parse_version(remote_version) <= self._parse_version(local_version):
                     self.after(0, lambda: self._update_check_done(False, "Up to date."))
                     return
 
-                compare_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/compare/{local_sha}...main" if local_sha else None
-                changed_files = []
+                tree_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/git/trees/main?recursive=1"
+                req2 = urllib.request.Request(tree_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                with urllib.request.urlopen(req2, timeout=15) as resp2:
+                    tree_data = json.loads(resp2.read().decode())
+                    all_files = [item["path"] for item in tree_data.get("tree", []) if item["type"] == "blob"
+                                 and not item["path"].startswith(".git/")
+                                 and not item["path"].startswith("__pycache__/")
+                                 and not item["path"].startswith("builds/")
+                                 and not item["path"].startswith("logs/")
+                                 and not item["path"].startswith("repos/")
+                                 and not item["path"].endswith(".pyc")]
 
-                if compare_url:
-                    try:
-                        req2 = urllib.request.Request(compare_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
-                        with urllib.request.urlopen(req2, timeout=15) as resp2:
-                            compare_data = json.loads(resp2.read().decode())
-                            changed_files = [f["filename"] for f in compare_data.get("files", [])]
-                    except Exception:
-                        changed_files = []
-
-                if not changed_files:
-                    self.after(0, lambda: self._update_check_done(False, "Up to date."))
+                if not all_files:
+                    self.after(0, lambda: self._update_check_done(False, "No files found in repository."))
                     return
 
-                self.after(0, lambda: self._show_update_modal(latest_sha, latest_date, latest_msg, changed_files))
+                self.after(0, lambda: self._show_update_modal(local_version, remote_version, all_files))
 
             except Exception as e:
                 self.after(0, lambda: self._update_check_done(False, f"Error: {e}"))
 
         threading.Thread(target=_do_check, daemon=True).start()
 
-    def _get_local_commit_sha(self):
-        try:
-            git_dir = os.path.join(ROOT_DIR, ".git")
-            head_path = os.path.join(git_dir, "HEAD")
-            if not os.path.exists(head_path):
-                return None
-            with open(head_path, "r") as f:
-                head_content = f.read().strip()
-            if head_content.startswith("ref:"):
-                ref_path = os.path.join(git_dir, head_content[5:])
-                if os.path.exists(ref_path):
-                    with open(ref_path, "r") as f:
-                        return f.read().strip()[:8]
-            return head_content[:8]
-        except Exception:
-            return None
-
     def _update_check_done(self, has_update, msg):
         self.update_btn.configure(state="normal", text="Check for Updates")
         color = GREEN if has_update else MUTED
         self.update_status_lbl.configure(text=msg, text_color=color)
 
-    def _show_update_modal(self, latest_sha, latest_date, latest_msg, changed_files):
+    def _show_update_modal(self, local_version, remote_version, all_files):
         self.update_btn.configure(state="normal", text="Check for Updates")
         self.update_status_lbl.configure(text="Update available!", text_color=GREEN)
 
@@ -1516,17 +1498,17 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         info_frame = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
         info_frame.pack(fill="x", padx=20, pady=8)
 
-        ctk.CTkLabel(info_frame, text=f"Date: {latest_date}",
-                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+        ctk.CTkLabel(info_frame, text=f"Current version: v{local_version}",
+                      font=ctk.CTkFont(size=13), text_color=MUTED).pack(
             padx=15, pady=(10, 2), anchor="w")
-        ctk.CTkLabel(info_frame, text=f"Message: {latest_msg}",
-                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
+        ctk.CTkLabel(info_frame, text=f"New version: v{remote_version}",
+                      font=ctk.CTkFont(size=13, weight="bold"), text_color=GREEN).pack(
             padx=15, pady=(2, 10), anchor="w")
 
         files_frame = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
         files_frame.pack(fill="both", expand=True, padx=20, pady=8)
 
-        ctk.CTkLabel(files_frame, text=f"Changed Files ({len(changed_files)}):",
+        ctk.CTkLabel(files_frame, text=f"Files to update ({len(all_files)}):",
                       font=ctk.CTkFont(size=14, weight="bold"), text_color=TEXT).pack(
             padx=15, pady=(10, 5), anchor="w")
 
@@ -1537,7 +1519,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                                    scrollbar_button_hover_color="#475569")
         log_text.pack(fill="both", expand=True, padx=15, pady=(5, 15))
 
-        for f in changed_files:
+        for f in all_files:
             log_text.insert("end", f"  {f}\n")
         log_text.see("1.0")
 
@@ -1567,11 +1549,11 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 import urllib.request
                 import base64
 
-                total = len(changed_files)
+                total = len(all_files)
                 success_count = 0
                 fail_count = 0
 
-                for i, filename in enumerate(changed_files, 1):
+                for i, filename in enumerate(all_files, 1):
                     self.after(0, lambda fn=filename, idx=i: log_text.insert("end", f"[{idx}/{total}] Downloading: {fn}...\n"))
                     self.after(0, lambda: log_text.see("end"))
 
