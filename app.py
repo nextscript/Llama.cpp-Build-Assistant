@@ -49,7 +49,7 @@ GREEN = "#7bd45a"
 DANGER = "#dc2626"
 DANGER_HOVER = "#b91c1c"
 
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = "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"
 
 
 # ─── Main Application ───────────────────────────────────────────────
