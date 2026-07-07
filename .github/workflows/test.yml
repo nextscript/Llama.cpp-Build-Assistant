@@ -1,0 +1,46 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Full Python-version coverage on Linux (the primary dev OS), plus a
+        # cross-platform smoke test on Windows and macOS.
+        include:
+          - { os: ubuntu-latest,  python: "3.12" }
+          - { os: ubuntu-latest,  python: "3.13" }
+          - { os: ubuntu-latest,  python: "3.14" }
+          - { os: windows-latest, python: "3.13" }
+          - { os: macos-latest,   python: "3.13" }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        # requirements.txt includes setuptools (distutils shim for GPUtil on
+        # Python 3.12+), so this works on 3.12/3.13/3.14 alike.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run tests
+        run: pytest tests/ -ra

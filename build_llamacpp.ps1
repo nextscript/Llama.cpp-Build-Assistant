@@ -131,6 +131,47 @@ function Log($msg)  { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function OK($msg)   { Write-Host "    [OK] $msg" -ForegroundColor Green }
 function WARN($msg) { Write-Host "    [!!] $msg" -ForegroundColor Yellow }
 
+function Remove-PathWithRetry {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [int]$Retries = 8,
+        [int]$DelayMs = 500
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+
+    for ($i = 1; $i -le $Retries; $i++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $Retries) { throw }
+            WARN "Could not remove '$Path' yet (attempt $i/$Retries): $($_.Exception.Message)"
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
+function Move-PathWithRetry {
+    param(
+        [Parameter(Mandatory=$true)][string]$Source,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [int]$Retries = 8,
+        [int]$DelayMs = 500
+    )
+
+    for ($i = 1; $i -le $Retries; $i++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $Retries) { throw }
+            WARN "Could not move '$Source' to '$Destination' yet (attempt $i/$Retries): $($_.Exception.Message)"
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
 function Refresh-Path {
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("PATH","User")
@@ -256,6 +297,35 @@ function Get-VsGenerator {
         }
     }
     return "Visual Studio 17 2022"
+}
+
+function Resolve-MsvcClPath {
+    # Return the full path to the x64 MSVC compiler. CMake's ASM language check
+    # does not reliably resolve a bare "cl" when the script was launched from a
+    # normal PowerShell instead of a Developer Prompt.
+    param([Parameter(Mandatory=$true)][string]$VsInstallPath)
+
+    $defaultVersionFile = Join-Path $VsInstallPath "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt"
+    if (Test-Path -LiteralPath $defaultVersionFile) {
+        $toolVersion = (Get-Content -LiteralPath $defaultVersionFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+        if ($toolVersion) {
+            $candidate = Join-Path $VsInstallPath "VC\Tools\MSVC\$toolVersion\bin\Hostx64\x64\cl.exe"
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        }
+    }
+
+    $toolsRoot = Join-Path $VsInstallPath "VC\Tools\MSVC"
+    if (Test-Path -LiteralPath $toolsRoot) {
+        $latest = Get-ChildItem -LiteralPath $toolsRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($latest) {
+            $candidate = Join-Path $latest.FullName "bin\Hostx64\x64\cl.exe"
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        }
+    }
+
+    return $null
 }
 
 function Build-SpirvHeaders {
@@ -786,18 +856,29 @@ Set-Location $InstallDir
 git config --global core.longpaths true
 OK "git core.longpaths enabled"
 
-$existingDir = Get-ChildItem $InstallDir -Directory | Where-Object { $_.Name -match "^b\d+_$([regex]::Escape($DIR_SUFFIX))$" } | Sort-Object Name -Descending | Select-Object -First 1
+$versionPrefixPattern = if ($REPO_PR) { "pr$REPO_PR" } else { "(?:b\d+|bUNKNOWN)" }
+$existingDir = Get-ChildItem $InstallDir -Directory | Where-Object { $_.Name -match "^${versionPrefixPattern}_$([regex]::Escape($DIR_SUFFIX))$" } | Sort-Object Name -Descending | Select-Object -First 1
 
 if ($existingDir) {
     $dir = $existingDir.FullName
     if ($Update) {
         Log "Updating existing checkout: $dir"
         Push-Location $dir
-        git fetch --all --prune
-        if ($LASTEXITCODE -ne 0) { WARN "git fetch failed"; Pop-Location; exit 1 }
-        git reset --hard "origin/$REPO_BRANCH"
-        if ($LASTEXITCODE -ne 0) { WARN "git reset failed"; Pop-Location; exit 1 }
+        if ($REPO_PR) {
+            git fetch --force origin "pull/$REPO_PR/head:pr$REPO_PR"
+            if ($LASTEXITCODE -ne 0) { WARN "git fetch PR #$REPO_PR failed"; Pop-Location; exit 1 }
+            git checkout "pr$REPO_PR"
+            if ($LASTEXITCODE -ne 0) { WARN "git checkout PR #$REPO_PR failed"; Pop-Location; exit 1 }
+            git reset --hard "pr$REPO_PR"
+            if ($LASTEXITCODE -ne 0) { WARN "git reset PR #$REPO_PR failed"; Pop-Location; exit 1 }
+        } else {
+            git fetch --all --prune
+            if ($LASTEXITCODE -ne 0) { WARN "git fetch failed"; Pop-Location; exit 1 }
+            git reset --hard "origin/$REPO_BRANCH"
+            if ($LASTEXITCODE -ne 0) { WARN "git reset failed"; Pop-Location; exit 1 }
+        }
         git clean -fdx -e node_modules
+        if ($LASTEXITCODE -ne 0) { WARN "git clean failed"; Pop-Location; exit 1 }
         Pop-Location
         OK "Updated to latest '$REPO_BRANCH'"
     } else {
@@ -805,7 +886,7 @@ if ($existingDir) {
     }
 } else {
     $tmpDir = Join-Path $InstallDir "_tmp_$Source"
-    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
+    if (Test-Path -LiteralPath $tmpDir) { Remove-PathWithRetry $tmpDir }
 
     if ($REPO_PR) {
         # PR-based source: clone the base repo, then fetch the pull request
@@ -817,7 +898,11 @@ if ($existingDir) {
         git fetch origin "pull/$REPO_PR/head:pr$REPO_PR"
         if ($LASTEXITCODE -ne 0) { WARN "git fetch PR #$REPO_PR failed"; Pop-Location; exit 1 }
         git checkout "pr$REPO_PR"
-        if ($REPO_SUBMODULES) { git submodule update --init --recursive }
+        if ($LASTEXITCODE -ne 0) { WARN "git checkout PR #$REPO_PR failed"; Pop-Location; exit 1 }
+        if ($REPO_SUBMODULES) {
+            git submodule update --init --recursive
+            if ($LASTEXITCODE -ne 0) { WARN "git submodule update failed"; Pop-Location; exit 1 }
+        }
         $desc = git describe --tags --always 2>$null
         $ver  = [regex]::Match($desc, 'b\d+').Value
         if (-not $ver) { $ver = "pr$REPO_PR" }
@@ -835,8 +920,9 @@ if ($existingDir) {
         Pop-Location
     }
     $dir = Join-Path $InstallDir "${ver}_$DIR_SUFFIX"
-    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-    Rename-Item $tmpDir $dir
+    Set-Location $InstallDir
+    if (Test-Path -LiteralPath $dir) { Remove-PathWithRetry $dir }
+    Move-PathWithRetry $tmpDir $dir
     OK "Directory: $dir"
 }
 
@@ -998,6 +1084,15 @@ $vsGenerator = switch ($vsMajor) {
 }
 OK "VS: $vsPath2 (v$vsVersion -> $vsGenerator)"
 
+$msvcClExe = Resolve-MsvcClPath -VsInstallPath $vsPath2
+if (-not $msvcClExe) {
+    WARN "Could not locate MSVC cl.exe under: $vsPath2"
+    WARN "Install the C++ workload / MSVC x64 tools in Visual Studio Installer."
+    exit 1
+}
+Add-ToPath (Split-Path -Parent $msvcClExe)
+OK "MSVC cl.exe: $msvcClExe"
+
 # Build the web UI from source when requested (before CMake configure,
 # because LLAMA_USE_PREBUILT_UI=OFF expects the prebuilt assets present).
 if ($BuildUi) {
@@ -1037,12 +1132,24 @@ if ($BuildType -eq "CUDA") {
 } elseif ($BuildType -eq "Vulkan") {
     # RDNA4 (Radeon RX 9000) Vulkan recipe: Vulkan backend + recent
     # SPIRV-Headers prefix + ASM/CMP0194 workarounds (llama.cpp #22100).
+    # Use the full cl.exe path: a bare "cl" is not resolvable when this script
+    # is launched from a normal PowerShell instead of a VS Developer Prompt.
+    $cacheFile = Join-Path $buildDir "CMakeCache.txt"
+    if (Test-Path -LiteralPath $cacheFile) {
+        $cacheText = Get-Content -LiteralPath $cacheFile -Raw -ErrorAction SilentlyContinue
+        if ($cacheText -match "CMAKE_ASM_COMPILER[^=]*=cl(\.exe)?(\r?\n|$)") {
+            Log "Deleting stale Vulkan CMake cache with bare CMAKE_ASM_COMPILER=cl"
+            Remove-PathWithRetry $buildDir
+            New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+        }
+    }
+
     $cmakeFlags += @(
         "-DGGML_VULKAN=ON",
         "-DGGML_CUDA=OFF",
         "-DGGML_VULKAN_CHECK_RESULTS=OFF",
         "-DCMAKE_POLICY_DEFAULT_CMP0194=OLD",
-        "-DCMAKE_ASM_COMPILER=cl",
+        "-DCMAKE_ASM_COMPILER=$msvcClExe",
         "-DBUILD_SHARED_LIBS=OFF"
     )
     if ($spirvPrefix) {

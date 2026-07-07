@@ -1,4 +1,11 @@
-"""Tests for python_manager — version parsing + selection ranking."""
+"""Tests for python_manager — version parsing + base interpreter selection.
+
+The interpreter selection now picks the newest base interpreter inside the
+supported range (3.9–3.14) to build the project virtualenv from. Base
+"readiness" (whether deps already import) is no longer a selection factor,
+because the dependencies are always installed into the project venv — so the
+tests check range/newest ordering rather than a ready/not-ready ranking.
+"""
 import python_manager as pm
 
 
@@ -17,51 +24,36 @@ class TestParseVersion:
         assert pm.parse_version("") is None
 
 
-class TestVersionRank:
-    def _p(self, ver, ready=False):
-        info = pm.PyInfo("/nonexistent/python", ver, "test")
-        info.imports_ok = len(pm.REQUIRED_IMPORTS) if ready else 0
-        return pm._version_rank(info)
-
-    def test_ready_beats_not_ready(self):
-        ready_312 = self._p((3, 12, 0), ready=True)
-        notready_313 = self._p((3, 13, 0), ready=False)
-        assert ready_312 > notready_313
-
-    def test_in_range_beats_out_of_range(self):
-        in_range = self._p((3, 13, 0), ready=False)
-        out_range = self._p((3, 14, 0), ready=False)
-        assert in_range > out_range
-
-    def test_newer_in_range_wins(self):
-        a = self._p((3, 12, 0), ready=False)
-        b = self._p((3, 13, 0), ready=False)
-        assert b > a
-
-
 class TestSelectBest:
-    def test_prefers_ready_interpreter(self):
-        found = [
-            pm.PyInfo("/x/py314", (3, 14, 0), "a"),   # not ready, out of range
-            pm.PyInfo("/x/py313", (3, 13, 0), "b"),   # not ready, in range
-        ]
-        found[0].imports_ok = 0
-        found[1].imports_ok = len(pm.REQUIRED_IMPORTS)  # ready
+    def _p(self, ver):
+        return pm.PyInfo("/nonexistent/python", ver, "test")
+
+    def test_prefers_newest_in_range(self):
+        found = [self._p((3, 12, 0)), self._p((3, 14, 2)), self._p((3, 13, 0))]
+        best = pm.select_best(found)
+        assert best is not None
+        assert best.version[:2] == (3, 14)
+
+    def test_newer_in_range_beats_older_in_range(self):
+        found = [self._p((3, 12, 0)), self._p((3, 13, 0))]
+        best = pm.select_best(found)
+        assert best is not None
+        assert best.version[:2] == (3, 13)
+
+    def test_prefers_in_range_over_out_of_range(self):
+        # 3.15 is above PREFERRED_MAX (3.14); 3.13 is in range -> 3.13 wins.
+        found = [self._p((3, 15, 0)), self._p((3, 13, 0))]
         best = pm.select_best(found)
         assert best is not None
         assert best.version[:2] == (3, 13)
 
     def test_returns_none_when_nothing_supported(self):
-        found = [pm.PyInfo("/x/py38", (3, 8, 0), "old")]
+        found = [self._p((3, 8, 0))]
         assert pm.select_best(found) is None
 
-    def test_falls_back_to_stable_range_when_not_ready(self):
-        found = [
-            pm.PyInfo("/x/py314", (3, 14, 0), "a"),
-            pm.PyInfo("/x/py312", (3, 12, 0), "b"),
-        ]
-        for p in found:
-            p.imports_ok = 0
+    def test_falls_back_to_out_of_range_when_nothing_in_range(self):
+        # 3.8 below MIN (rejected); 3.15 above range but supported -> fallback.
+        found = [self._p((3, 8, 0)), self._p((3, 15, 0))]
         best = pm.select_best(found)
         assert best is not None
-        assert best.version[:2] == (3, 12)
+        assert best.version[:2] == (3, 15)

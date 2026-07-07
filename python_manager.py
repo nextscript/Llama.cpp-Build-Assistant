@@ -2,29 +2,28 @@
 Cross-platform Python interpreter manager.
 
 This module uses ONLY the Python standard library so that it can run under
-*any* available Python (e.g. a bleeding-edge 3.14) to detect and select a
-compatible interpreter for the project's requirements.txt.
+*any* available Python (e.g. a bleeding-edge 3.14) to set up a project-local
+virtual environment and select it for the project's requirements.txt.
+
+Strategy (v0.3+): project-local virtualenv
+-------------------------------------------
+Modern Linux distros (Ubuntu 23.04+, Debian 12+, Fedora) mark the system
+interpreter as *externally managed* (PEP 668), so `pip install` into it fails
+with "externally-managed-environment". Installing system-wide also risks
+breaking the OS Python. The robust, sudo-free, cross-platform solution is to
+create a virtualenv inside the project (``<root>/.venv``) and install the
+dependencies there. This works identically on Windows, macOS and Linux and
+supports Python 3.12 / 3.13 / 3.14.
 
 Responsibilities
 ----------------
-1. Discover every Python interpreter installed on the system
-   (Windows py-launcher + registry + PATH, macOS/Linux alternatives +
-   pyenv + Homebrew + /usr/bin).
-2. Test each interpreter against requirements.txt (version sanity + whether
-   the required packages are importable or installable).
-3. Select the best compatible interpreter (newest *stable* version that is
-   known to work; avoid bleeding-edge unless verified).
-4. If no compatible interpreter is present, download and install a known-good
-   version from the official source:
-       - Windows / macOS: python.org official installers
-       - Linux:           deadsnakes PPA (Ubuntu) or build-from-source fallback
-5. Expose the chosen interpreter + pip path for the launchers and the app.
-
-CLI usage
----------
-    python python_manager.py            # print chosen interpreter + install deps
-    python python_manager.py check      # only report, do not install anything
-    python python_manager.py bootstrap  # ensure deps in chosen interpreter
+1. Discover every Python interpreter installed on the system.
+2. Select a suitable base interpreter (3.9+, preferring the newest in the
+   3.12–3.14 range).
+3. Create (or reuse) a project virtualenv and install requirements.txt into it.
+4. Only if NO usable interpreter exists at all, offer to install one from the
+   official source (last resort).
+5. Expose the chosen *venv* interpreter path for the launchers and the app.
 """
 from __future__ import annotations
 
@@ -44,9 +43,10 @@ from typing import List, Dict, Optional, Tuple
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 REQUIREMENTS_FILE = os.path.join(ROOT_DIR, "requirements.txt")
+VENV_DIR = os.path.join(ROOT_DIR, ".venv")
 
 # Packages that the app actually imports at runtime. We probe these to decide
-# whether an interpreter is "ready" without needing a full pip dry-run.
+# whether a virtualenv is "ready".
 REQUIRED_IMPORTS = {
     "customtkinter": "customtkinter",
     "psutil": "psutil",
@@ -58,15 +58,12 @@ REQUIRED_IMPORTS = {
 
 # Python version policy.
 #  - MIN_SUPPORTED: anything below is rejected outright.
-#  - PREFERRED_MAX: we prefer interpreters at or below this for stability
-#    (bleeding-edge releases like 3.14 often lack wheels for customtkinter /
-#     GPUtil). Interpreters above PREFERRED_MAX are only used as a last resort
-#    AND only if their required packages actually import successfully.
+#  - PREFERRED_MAX: we prefer interpreters at or below this. 3.14 is now a
+#    first-class target (all deps are pure-Python or ship 3.14 wheels).
 MIN_SUPPORTED = (3, 9)
-PREFERRED_MAX = (3, 13)
+PREFERRED_MAX = (3, 14)
 
-# Version installed automatically when nothing compatible is found.
-# Keep this on a well-supported, widely-wheeled release.
+# Version installed automatically when nothing usable is found at all.
 RECOMMENDED_INSTALL = (3, 13)
 
 # python.org metadata for fetching the latest patch release of a minor version.
@@ -109,7 +106,9 @@ def parse_version(version_str: str) -> Optional[Tuple[int, int, int]]:
     return (major, minor, patch)
 
 
-def version_str(ver: Tuple[int, int, int]) -> str:
+def version_str(ver: Optional[Tuple[int, int, int]]) -> str:
+    if not ver:
+        return "?"
     return ".".join(str(x) for x in ver)
 
 
@@ -118,7 +117,7 @@ def _norm(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Discovery
+# Discovery (unchanged)
 # ---------------------------------------------------------------------------
 
 def _get_python_version(exe: str) -> Optional[Tuple[int, int, int]]:
@@ -126,7 +125,6 @@ def _get_python_version(exe: str) -> Optional[Tuple[int, int, int]]:
     rc, out, _ = _run([exe, "--version"])
     text = (out or "").strip()
     if rc != 0 or not text:
-        # Some very old Pythons print --version to stderr
         rc2, _, err = _run([exe, "--version"])
         text = (err or "").strip() or text
     return parse_version(text)
@@ -145,6 +143,12 @@ def _requirements_importable(exe: str) -> int:
         if _package_ok(exe, import_name):
             ok += 1
     return ok
+
+
+def _tkinter_ok(exe: str) -> bool:
+    """customtkinter requires tkinter; check it is importable."""
+    rc, _, _ = _run([exe, "-c", "import tkinter"], timeout=15)
+    return rc == 0
 
 
 class PyInfo:
@@ -215,7 +219,6 @@ def _discover_windows() -> List[PyInfo]:
     if rc == 0 and out:
         for line in out.splitlines():
             line = line.strip()
-            # format: " -V:3.13[-64]     C:\path\python.exe"
             m = re.search(r"([A-Za-z]:\\.*python\.exe)", line, re.IGNORECASE)
             if m:
                 cands.append((m.group(1), "py-launcher"))
@@ -256,6 +259,7 @@ def _discover_windows() -> List[PyInfo]:
     # 3. Common install locations (Microsoft Store + python.org)
     common = [
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python"),
+        os.path.expandvars(r"%ProgramFiles%\Python314"),
         os.path.expandvars(r"%ProgramFiles%\Python313"),
         os.path.expandvars(r"%ProgramFiles%\Python312"),
         os.path.expandvars(r"%ProgramFiles%\Python311"),
@@ -269,7 +273,7 @@ def _discover_windows() -> List[PyInfo]:
                     cands.append((exe, f"path:{base}"))
 
     # 4. PATH lookups
-    for name in ("python", "python3", "python3.13", "python3.12", "python3.11"):
+    for name in ("python", "python3", "python3.14", "python3.13", "python3.12", "python3.11"):
         resolved = shutil.which(name)
         if resolved:
             cands.append((resolved, f"PATH:{name}"))
@@ -297,12 +301,10 @@ def _discover_unix() -> List[PyInfo]:
             entries = os.listdir(d)
         except OSError:
             continue
-        # direct python3.X binaries
         for mv in minor_versions:
             exe = os.path.join(d, f"python{mv}")
             if os.path.isfile(exe):
                 cands.append((exe, f"dir:{d}"))
-        # pyenv version subfolders (each contains bin/python)
         if "pyenv" in d:
             for name in entries:
                 exe = os.path.join(d, name, "bin", "python")
@@ -310,7 +312,7 @@ def _discover_unix() -> List[PyInfo]:
                     cands.append((exe, f"pyenv:{name}"))
 
     # 2. generic names on PATH
-    for name in ("python3", "python", "python3.13", "python3.12", "python3.11"):
+    for name in ("python3", "python", "python3.14", "python3.13", "python3.12", "python3.11"):
         resolved = shutil.which(name)
         if resolved:
             cands.append((resolved, f"PATH:{name}"))
@@ -324,115 +326,192 @@ def discover_pythons() -> List[PyInfo]:
     system = platform.system()
     found = _discover_windows() if system == "Windows" else _discover_unix()
 
-    # The currently running interpreter should always be considered.
     current = _norm(sys.executable)
     if current and not any(p.path == current for p in found):
         ver = _get_python_version(current)
         if ver:
             found.append(PyInfo(current, ver, "current-process"))
 
-    # Sort newest first for predictable selection.
     found.sort(key=lambda p: p.version or (0, 0, 0), reverse=True)
     return found
 
 
 # ---------------------------------------------------------------------------
-# Selection
+# Virtualenv management (NEW — solves PEP 668)
 # ---------------------------------------------------------------------------
 
-def _version_rank(p: PyInfo) -> Tuple[int, int, int, int]:
-    """Ranking key: prefer (ready, in_preferred_range, newer). Higher = better."""
-    ready = 1 if p.ready else 0
-    in_range = 1 if (p.version and MIN_SUPPORTED <= p.version[:2] <= PREFERRED_MAX) else 0
-    major, minor, patch = p.version or (0, 0, 0)
-    # Within the preferred range we still prefer newer; outside we deprioritise.
-    return (ready, in_range, major, minor)
+def _venv_python_path() -> str:
+    """Path to the venv's python executable (platform-aware)."""
+    if platform.system() == "Windows":
+        return os.path.join(VENV_DIR, "Scripts", "python.exe")
+    return os.path.join(VENV_DIR, "bin", "python")
+
+
+def venv_ready() -> bool:
+    """True if the project venv exists AND all required packages import."""
+    vpy = _venv_python_path()
+    return bool(vpy and os.path.isfile(vpy)
+                and _requirements_importable(vpy) == len(REQUIRED_IMPORTS))
+
+
+def _bootstrap_pip_in_venv(base_exe: str, on_log=None) -> bool:
+    """Create a venv without pip, then bootstrap pip via get-pip.py.
+
+    Needed on Debian/Ubuntu where ``ensurepip`` is disabled and
+    ``python -m venv`` refuses to install pip into the new environment.
+    """
+    def log(msg):
+        if on_log:
+            on_log(msg)
+    rc, _, err = _run([base_exe, "-m", "venv", "--clear", "--without-pip", VENV_DIR],
+                      timeout=120)
+    vpy = _venv_python_path()
+    if rc != 0 or not vpy or not os.path.isfile(vpy):
+        log(f"venv (without pip) creation failed: {err.strip()[:200]}")
+        return False
+    log("Bootstrapping pip via get-pip.py (ensurepip is unavailable) ...")
+    gp = os.path.join(VENV_DIR, "get-pip.py")
+    try:
+        urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", gp)
+    except Exception as e:  # noqa: BLE001
+        log(f"Could not download get-pip.py: {e}")
+        return False
+    rc, _, err = _run([vpy, gp, "--disable-pip-version-check"], timeout=180)
+    if rc != 0:
+        log(f"get-pip.py failed: {err.strip()[:200]}")
+        return False
+    return True
+
+
+def _create_venv(base_exe: str, on_log=None) -> bool:
+    """Create a fresh project venv from base_exe (with pip). Returns success."""
+    def log(msg):
+        if on_log:
+            on_log(msg)
+
+    # Standard creation (installs pip via ensurepip).
+    rc, out, err = _run([base_exe, "-m", "venv", "--clear", VENV_DIR], timeout=180)
+    vpy = _venv_python_path()
+    if rc != 0 or not vpy or not os.path.isfile(vpy):
+        # ensurepip likely disabled (Debian/Ubuntu) -> bootstrap pip manually.
+        log("Standard venv creation failed; trying pip bootstrap ...")
+        return _bootstrap_pip_in_venv(base_exe, on_log=on_log)
+
+    # Verify pip is actually usable in the new venv.
+    rc2, _, _ = _run([vpy, "-m", "pip", "--version"], timeout=30)
+    if rc2 != 0:
+        return _bootstrap_pip_in_venv(base_exe, on_log=on_log)
+    return True
+
+
+def ensure_venv(base_exe: str, on_log=None) -> Optional[str]:
+    """Create or reuse the project virtualenv and install requirements.
+
+    Returns the venv python path on success, or None on failure. Installing
+    into a venv avoids the externally-managed-environment (PEP 668) error.
+    """
+    def log(msg):
+        if on_log:
+            on_log(msg)
+
+    # Fast path: reuse an existing, ready venv.
+    if venv_ready():
+        log(f"Reusing existing virtualenv: {VENV_DIR}")
+        return _venv_python_path()
+
+    if not os.path.isfile(base_exe):
+        log(f"Base interpreter not found: {base_exe}")
+        return None
+
+    base_ver = _get_python_version(base_exe)
+    log(f"Creating virtualenv at {VENV_DIR} "
+        f"(base: Python {version_str(base_ver)} @ {base_exe}) ...")
+
+    if not _create_venv(base_exe, on_log=on_log):
+        log("Could not create a virtualenv with this interpreter.")
+        return None
+
+    vpy = _venv_python_path()
+    if not vpy or not os.path.isfile(vpy):
+        return None
+
+    # Upgrade pip, then install requirements into the venv.
+    _run([vpy, "-m", "pip", "install", "--upgrade", "pip",
+          "--disable-pip-version-check"], timeout=180)
+    log("Installing requirements into virtualenv ...")
+    rc, out, err = _run(
+        [vpy, "-m", "pip", "install", "-r", REQUIREMENTS_FILE,
+         "--disable-pip-version-check"],
+        timeout=600,
+    )
+    if rc != 0:
+        log(f"pip install failed (rc={rc})\n{err.strip()[:500]}")
+        return None
+    log("Requirements installed into virtualenv.")
+    return vpy
+
+
+def _warn_tkinter_if_missing(exe: str, on_log=None) -> None:
+    """customtkinter needs tkinter; warn clearly if it is unavailable."""
+    if _tkinter_ok(exe):
+        return
+
+    def log(msg):
+        if on_log:
+            on_log(msg)
+    system = platform.system()
+    log("WARNING: tkinter is not available for this interpreter.")
+    log("The GUI (customtkinter) requires tkinter. Install it:")
+    if system == "Linux":
+        rc, out, _ = _run(["cat", "/etc/os-release"])
+        low = out.lower()
+        if "ubuntu" in low or "debian" in low:
+            log("  sudo apt install python3-tk")
+        elif "fedora" in low:
+            log("  sudo dnf install python3-tkinter")
+        elif "arch" in low:
+            log("  sudo pacman -S tk")
+        else:
+            log("  Install the tk/tkinter package for your distribution.")
+    elif system == "Darwin":
+        log("  brew install python-tk   (or reinstall python.org Python)")
+    else:
+        log("  Reinstall Python from python.org with tcl/tk included.")
+
+
+# ---------------------------------------------------------------------------
+# Selection (base interpreter — the venv is created from it)
+# ---------------------------------------------------------------------------
+
+def _in_supported_range(ver: Optional[Tuple[int, int, int]]) -> bool:
+    return bool(ver) and MIN_SUPPORTED <= ver[:2] <= PREFERRED_MAX
 
 
 def select_best(discover: Optional[List[PyInfo]] = None,
                 allow_install: bool = True,
                 on_log=None) -> Optional[PyInfo]:
+    """Select the best BASE interpreter to build the venv from.
+
+    Prefers the newest interpreter inside the supported range; falls back to
+    any supported interpreter (incl. bleeding edge) if none is in range.
     """
-    Select the best compatible interpreter.
-
-    Selection order:
-      1. Any interpreter whose required packages ALL import (ready),
-         preferring ones inside the stable version range, then newer.
-      2. Any interpreter inside the stable version range whose version is
-         supported (packages may still need installing).
-      3. Any supported interpreter at all (last resort, incl. bleeding edge).
-
-    Returns None if no supported interpreter exists (caller may then install).
-    """
-    found = discover if discover is not None else discover_pythons()
-
     def log(msg):
         if on_log:
             on_log(msg)
-
+    found = discover if discover is not None else discover_pythons()
     supported = [p for p in found if p.version and p.version[:2] >= MIN_SUPPORTED]
     if not supported:
         return None
-
-    # First: ready interpreters, ranked.
-    ready = [p for p in supported if p.ready]
-    if ready:
-        ready.sort(key=_version_rank, reverse=True)
-        best = ready[0]
-        log(f"Selected ready interpreter {best.version} ({best.path})")
-        return best
-
-    # Second: stable-range interpreters needing a dependency install.
-    stable = [p for p in supported if MIN_SUPPORTED <= p.version[:2] <= PREFERRED_MAX]
-    if stable:
-        stable.sort(key=_version_rank, reverse=True)
-        best = stable[0]
-        log(f"Selected interpreter {best.version} (deps need install) at {best.path}")
-        return best
-
-    # Third: any supported interpreter (bleeding edge included).
-    found_sorted = sorted(supported, key=_version_rank, reverse=True)
-    best = found_sorted[0]
-    log(f"Fallback to {best.version} at {best.path} (outside preferred range)")
+    in_range = [p for p in supported if p.version[:2] <= PREFERRED_MAX]
+    pool = in_range if in_range else supported
+    pool.sort(key=lambda p: p.version or (0, 0, 0), reverse=True)
+    best = pool[0]
+    log(f"Selected base interpreter Python {version_str(best.version)} ({best.path})")
     return best
 
 
-def get_pip(exe: str) -> str:
-    """Return the pip command list for a given interpreter (ensures pip)."""
-    # Try `-m pip` first (works everywhere, no separate pip needed in PATH).
-    rc, _, _ = _run([exe, "-m", "pip", "--version"])
-    if rc == 0:
-        return exe  # caller uses [exe, "-m", "pip", ...]
-    # Bootstrap pip via ensurepip.
-    _run([exe, "-m", "ensurepip", "--upgrade"])
-    return exe
-
-
-def ensure_requirements(exe: str, on_log=None) -> bool:
-    """Install/upgrade requirements.txt into the given interpreter."""
-    def log(msg):
-        if on_log:
-            on_log(msg)
-
-    if not os.path.isfile(REQUIREMENTS_FILE):
-        log(f"requirements.txt not found at {REQUIREMENTS_FILE}")
-        return False
-
-    get_pip(exe)
-    log(f"Installing requirements into {exe} ...")
-    rc, out, err = _run(
-        [exe, "-m", "pip", "install", "--upgrade", "-r", REQUIREMENTS_FILE],
-        timeout=600,
-    )
-    if rc != 0:
-        log(f"pip install failed (rc={rc})\n{err.strip()}")
-        return False
-    log("Requirements installed successfully.")
-    return True
-
-
 # ---------------------------------------------------------------------------
-# Official installation (when nothing compatible exists)
+# Official installation (last resort: no usable interpreter at all)
 # ---------------------------------------------------------------------------
 
 def _latest_patch(minor: Tuple[int, int], on_log=None) -> Optional[str]:
@@ -454,7 +533,6 @@ def _latest_patch(minor: Tuple[int, int], on_log=None) -> Optional[str]:
             patches.append(v)
     if not patches:
         return None
-    # pick the highest patch
     patches.sort(key=lambda s: tuple(int(x) for x in s.split(".")), reverse=True)
     return patches[0]
 
@@ -467,9 +545,8 @@ def _install_windows(version: Tuple[int, int], on_log=None) -> Optional[str]:
     if not patch:
         log(f"Could not determine latest patch for Python {version[0]}.{version[1]}")
         return None
-    full = patch  # e.g. 3.13.1
-    url = f"https://www.python.org/ftp/python/{full}/python-{full}-amd64.exe"
-    installer = os.path.join(os.environ.get("TEMP", os.getcwd()), f"python-{full}-amd64.exe")
+    url = f"https://www.python.org/ftp/python/{patch}/python-{patch}-amd64.exe"
+    installer = os.path.join(os.environ.get("TEMP", os.getcwd()), f"python-{patch}-amd64.exe")
     log(f"Downloading {url} ...")
     try:
         urllib.request.urlretrieve(url, installer)
@@ -484,18 +561,13 @@ def _install_windows(version: Tuple[int, int], on_log=None) -> Optional[str]:
     if rc != 0:
         log(f"Installer failed (rc={rc}): {err}")
         return None
-    # Locate the newly installed interpreter.
     base = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python")
-    exe = None
     if os.path.isdir(base):
         for name in sorted(os.listdir(base), reverse=True):
             cand = os.path.join(base, name, "python.exe")
             if os.path.isfile(cand):
-                exe = cand
-                break
-    if exe and os.path.isfile(exe):
-        log(f"Installed Python {full} -> {exe}")
-        return exe
+                log(f"Installed Python {patch} -> {cand}")
+                return cand
     log("Install finished but interpreter not found in expected location.")
     return None
 
@@ -507,9 +579,8 @@ def _install_macos(version: Tuple[int, int], on_log=None) -> Optional[str]:
     patch = _latest_patch(version, on_log=on_log)
     if not patch:
         return None
-    full = patch
-    url = f"https://www.python.org/ftp/python/{full}/python-{full}-macos11.pkg"
-    pkg = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"python-{full}-macos11.pkg")
+    url = f"https://www.python.org/ftp/python/{patch}/python-{patch}-macos11.pkg"
+    pkg = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"python-{patch}-macos11.pkg")
     log(f"Downloading {url} ...")
     try:
         urllib.request.urlretrieve(url, pkg)
@@ -523,7 +594,7 @@ def _install_macos(version: Tuple[int, int], on_log=None) -> Optional[str]:
         return None
     exe = f"/Library/Frameworks/Python.framework/Versions/{version[0]}.{version[1]}/bin/python3"
     if os.path.isfile(exe):
-        log(f"Installed Python {full} -> {exe}")
+        log(f"Installed Python {patch} -> {exe}")
         return exe
     return None
 
@@ -535,29 +606,31 @@ def _install_linux(version: Tuple[int, int], on_log=None) -> Optional[str]:
     ver_dot = f"{version[0]}.{version[1]}"
     exe = f"/usr/bin/python{ver_dot}"
 
-    # Try deadsnakes PPA on Ubuntu/Debian first.
+    # Try deadsnakes PPA on Ubuntu. NOTE: python3-distutils no longer exists
+    # since 3.12 (distutils was removed from the stdlib), so we only install
+    # the interpreter and the venv package.
     rc, out, _ = _run(["cat", "/etc/os-release"])
     is_ubuntu = "ubuntu" in out.lower() or "debian" in out.lower()
     if is_ubuntu:
-        log("Adding deadsnakes PPA and installing python{} ...".format(ver_dot))
+        log(f"Adding deadsnakes PPA and installing python{ver_dot} ...")
+        pkgs = [f"python{ver_dot}", f"python{ver_dot}-venv"]
         cmds = [
             ["sudo", "add-apt-repository", "-y", "ppa:deadsnakes/ppa"],
             ["sudo", "apt-get", "update"],
-            ["sudo", "apt-get", "install", "-y",
-             f"python{ver_dot}", f"python{ver_dot}-venv", f"python{ver_dot}-distutils"],
+            ["sudo", "apt-get", "install", "-y"] + pkgs,
         ]
         ok = True
         for c in cmds:
             rc, _, err = _run(c, timeout=600)
             if rc != 0:
-                log(f"Command failed: {' '.join(c)}\n{err}")
+                log(f"Command failed: {' '.join(c)}\n{err.strip()[:300]}")
                 ok = False
                 break
         if ok and os.path.isfile(exe):
             log(f"Installed Python {ver_dot} -> {exe}")
             return exe
 
-    # Fallback: build from source (slow but universal).
+    # Last resort: build from source (slow).
     patch = _latest_patch(version, on_log=on_log)
     if not patch:
         return None
@@ -608,15 +681,14 @@ def install_python(version: Tuple[int, int] = RECOMMENDED_INSTALL,
 
 def ensure_compatible_python(on_log=None, auto_install: bool = True) -> Optional[str]:
     """
-    Return the path to a compatible, ready-to-run Python interpreter.
+    Return the path to a venv Python interpreter with all deps installed.
 
     Workflow:
-      - discover all interpreters
-      - pick the best compatible one
-      - if its deps aren't installed, install them
-      - if nothing compatible exists and auto_install, install one from
-        python.org and install its deps
-    Returns the interpreter path (deps installed) or None on failure.
+      - discover all base interpreters
+      - pick the best one (newest in the supported range)
+      - create/reuse the project virtualenv and install requirements into it
+      - (last resort) if no usable interpreter exists and auto_install,
+        install one from python.org and build the venv from it
     """
     def log(msg):
         if on_log:
@@ -625,41 +697,38 @@ def ensure_compatible_python(on_log=None, auto_install: bool = True) -> Optional
     found = discover_pythons()
     log(f"Discovered {len(found)} Python interpreter(s):")
     for p in found:
-        ready = "READY" if p.ready else f"imports {p.check_imports()}/{len(REQUIRED_IMPORTS)}"
-        log(f"  - {p.version} ({p.source}) {ready}")
+        log(f"  - Python {version_str(p.version)} ({p.source})")
 
     best = select_best(found, allow_install=auto_install, on_log=on_log)
     if best:
-        if not best.ready:
-            if not ensure_requirements(best.path, on_log=on_log):
-                # Deps failed to install -> this interpreter isn't usable.
-                log(f"Could not install requirements into {best.path}")
-                # Try to fall back to another discovered interpreter.
-                others = [p for p in found if p.path != best.path and p.usable]
-                for alt in sorted(others, key=_version_rank, reverse=True):
-                    if ensure_requirements(alt.path, on_log=on_log):
-                        return alt.path
-                # last resort: install a fresh interpreter below
-                best = None
-            else:
-                return best.path
-        else:
-            return best.path
+        vpy = ensure_venv(best.path, on_log=on_log)
+        if vpy:
+            _warn_tkinter_if_missing(vpy, on_log=on_log)
+            return vpy
+        # venv creation failed with the best base -> try the others.
+        others = [p for p in found if p.path != best.path and p.usable]
+        others.sort(key=lambda p: p.version or (0, 0, 0), reverse=True)
+        for alt in others:
+            vpy = ensure_venv(alt.path, on_log=on_log)
+            if vpy:
+                _warn_tkinter_if_missing(vpy, on_log=on_log)
+                return vpy
 
     if not auto_install:
         return None
 
-    log(f"No compatible interpreter found. Installing Python "
+    log(f"No usable interpreter found. Installing Python "
         f"{version_str(RECOMMENDED_INSTALL)} from the official source ...")
     new_exe = install_python(RECOMMENDED_INSTALL, on_log=on_log)
-    if not new_exe:
-        log("Automatic installation failed. Please install Python "
-            f"{version_str(RECOMMENDED_INSTALL)}+ manually from "
-            "https://www.python.org/downloads/")
-        return None
-    if ensure_requirements(new_exe, on_log=on_log):
-        return new_exe
-    log("Python installed but requirements could not be installed.")
+    if new_exe:
+        vpy = ensure_venv(new_exe, on_log=on_log)
+        if vpy:
+            _warn_tkinter_if_missing(vpy, on_log=on_log)
+            return vpy
+
+    log("Could not set up a Python environment. Please install Python "
+        f"{version_str(RECOMMENDED_INSTALL)}+ manually from "
+        "https://www.python.org/downloads/ and re-run.")
     return None
 
 
@@ -680,22 +749,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         found = discover_pythons()
         print(f"Discovered {len(found)} interpreter(s):")
         for p in found:
-            tag = "READY" if p.ready else f"imports {p.check_imports()}/{len(REQUIRED_IMPORTS)}"
-            print(f"  {version_str(p.version):10s} {tag:30s} {p.path}")
+            print(f"  {version_str(p.version):10s} {p.path}  ({p.source})")
         best = select_best(found)
         if best:
-            print(f"\nBest compatible: {version_str(best.version)} -> {best.path}")
+            print(f"\nBest base interpreter: Python {version_str(best.version)} -> {best.path}")
         else:
             print("\nNo supported interpreter found.")
+        vpy = _venv_python_path()
+        if os.path.isfile(vpy):
+            state = "READY" if venv_ready() else "exists (deps incomplete)"
+            print(f"Project virtualenv: {VENV_DIR}  [{state}]")
+        else:
+            print(f"Project virtualenv: {VENV_DIR}  [not created]")
         return 0
 
-    exe = ensure_compatible_python(on_log=_print,
-                                   auto_install=bootstrap and not check_only)
+    exe = ensure_compatible_python(on_log=_print, auto_install=bootstrap)
     if not exe:
         print("\n[python_manager] Could not obtain a compatible interpreter.")
         return 1
-    print(f"\n[python_manager] Using: {exe}")
-    # Write the chosen path to a file the launchers can read.
+    print(f"\n[python_manager] Using virtualenv: {exe}")
     cache = os.path.join(ROOT_DIR, ".python-interpreter")
     try:
         with open(cache, "w") as f:

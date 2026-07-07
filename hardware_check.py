@@ -705,11 +705,18 @@ def run_full_check():
 
 def get_recommendation(report):
     """Recommend a build type based on hardware report."""
-    system = platform.system()
     gpu_info = report.get("gpu", {})
+    report_os = str(report.get("os", ""))
+    report_is_macos = (
+        report_os.startswith("macOS")
+        or report_os.startswith("Darwin")
+        or bool(gpu_info.get("metal_available"))
+    )
 
-    # On macOS, Metal is the only relevant GPU backend for llama.cpp.
-    if system == "Darwin":
+    # On real macOS hardware reports, Metal is the relevant llama.cpp GPU
+    # backend. Do not key this solely off platform.system(): CI runs the
+    # synthetic Linux/Windows recommendation tests on macOS too.
+    if report_is_macos:
         return "Metal"
 
     # RDNA4 (Radeon RX 9000): ROCm/HIP is unreliable, Vulkan is the proven
