@@ -1451,23 +1451,37 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                     self.after(0, lambda: self._update_check_done(False, "Up to date."))
                     return
 
-                tree_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/git/trees/main?recursive=1"
-                req2 = urllib.request.Request(tree_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                commits_url = "https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits?per_page=100"
+                req2 = urllib.request.Request(commits_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
                 with urllib.request.urlopen(req2, timeout=15) as resp2:
-                    tree_data = json.loads(resp2.read().decode())
-                    all_files = [item["path"] for item in tree_data.get("tree", []) if item["type"] == "blob"
-                                 and not item["path"].startswith(".git/")
-                                 and not item["path"].startswith("__pycache__/")
-                                 and not item["path"].startswith("builds/")
-                                 and not item["path"].startswith("logs/")
-                                 and not item["path"].startswith("repos/")
-                                 and not item["path"].endswith(".pyc")]
+                    all_commits = json.loads(resp2.read().decode())
 
-                if not all_files:
-                    self.after(0, lambda: self._update_check_done(False, "No files found in repository."))
+                version_commits = [c for c in all_commits if remote_version in c["commit"]["message"]]
+
+                if not version_commits:
+                    self.after(0, lambda: self._update_check_done(False, "No update commits found."))
                     return
 
-                self.after(0, lambda: self._show_update_modal(local_version, remote_version, all_files))
+                changed_files = []
+                seen = set()
+                for commit in version_commits:
+                    sha = commit["sha"]
+                    commit_url = f"https://api.github.com/repos/nextscript/Llama.cpp-Build-Assistant/commits/{sha}"
+                    req3 = urllib.request.Request(commit_url, headers={"User-Agent": "LlamaCppBuildAssistant"})
+                    with urllib.request.urlopen(req3, timeout=15) as resp3:
+                        commit_data = json.loads(resp3.read().decode())
+                        for f in commit_data.get("files", []):
+                            filename = f["filename"]
+                            if filename not in seen:
+                                seen.add(filename)
+                                changed_files.append(filename)
+
+                if not changed_files:
+                    self.after(0, lambda: self._update_check_done(False, "No changed files found."))
+                    return
+
+                commit_msg = version_commits[0]["commit"]["message"].split("\n")[0]
+                self.after(0, lambda: self._show_update_modal(local_version, remote_version, changed_files, commit_msg))
 
             except Exception as e:
                 self.after(0, lambda: self._update_check_done(False, f"Error: {e}"))
@@ -1479,7 +1493,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         color = GREEN if has_update else MUTED
         self.update_status_lbl.configure(text=msg, text_color=color)
 
-    def _show_update_modal(self, local_version, remote_version, all_files):
+    def _show_update_modal(self, local_version, remote_version, changed_files, commit_msg):
         self.update_btn.configure(state="normal", text="Check for Updates")
         self.update_status_lbl.configure(text="Update available!", text_color=GREEN)
 
@@ -1503,12 +1517,15 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             padx=15, pady=(10, 2), anchor="w")
         ctk.CTkLabel(info_frame, text=f"New version: v{remote_version}",
                       font=ctk.CTkFont(size=13, weight="bold"), text_color=GREEN).pack(
+            padx=15, pady=(2, 2), anchor="w")
+        ctk.CTkLabel(info_frame, text=f"Commit: {commit_msg}",
+                      font=ctk.CTkFont(size=12), text_color=MUTED).pack(
             padx=15, pady=(2, 10), anchor="w")
 
         files_frame = ctk.CTkFrame(modal, fg_color=SURFACE, corner_radius=8, border_width=1, border_color=BORDER)
         files_frame.pack(fill="both", expand=True, padx=20, pady=8)
 
-        ctk.CTkLabel(files_frame, text=f"Files to update ({len(all_files)}):",
+        ctk.CTkLabel(files_frame, text=f"Changed files ({len(changed_files)}):",
                       font=ctk.CTkFont(size=14, weight="bold"), text_color=TEXT).pack(
             padx=15, pady=(10, 5), anchor="w")
 
@@ -1519,7 +1536,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                                    scrollbar_button_hover_color="#475569")
         log_text.pack(fill="both", expand=True, padx=15, pady=(5, 15))
 
-        for f in all_files:
+        for f in changed_files:
             log_text.insert("end", f"  {f}\n")
         log_text.see("1.0")
 
@@ -1549,11 +1566,11 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 import urllib.request
                 import base64
 
-                total = len(all_files)
+                total = len(changed_files)
                 success_count = 0
                 fail_count = 0
 
-                for i, filename in enumerate(all_files, 1):
+                for i, filename in enumerate(changed_files, 1):
                     self.after(0, lambda fn=filename, idx=i: log_text.insert("end", f"[{idx}/{total}] Downloading: {fn}...\n"))
                     self.after(0, lambda: log_text.see("end"))
 
