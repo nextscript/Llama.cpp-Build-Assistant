@@ -34,8 +34,6 @@ macOS, Ubuntu and other Linux distros**.
 | turboquant | `TheTom/llama-cpp-turboquant` | `feature/turboquant-kv-cache` |
 | turboquant 3/4 | `AtomicBot-ai/atomic-llama-cpp-turboquant` | `feature/turboquant-kv-cache` |
 | PrismML Ternary | `PrismML-Eng/llama.cpp` | `prism` |
-| Diffusion Gemma | `ggml-org/llama.cpp` | PR **#24427** |
-| Gemma External Drafter | `ggml-org/llama.cpp` | PR **#23211** |
 | OCR | `ggml-org/llama.cpp` | PR **#17400** |
 | Luce | `Luce-Org/lucebox-hub` | `main` (with submodules) |
 | DFlash | `Anbild/beellama.cpp` | `main` |

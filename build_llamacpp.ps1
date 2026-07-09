@@ -9,7 +9,7 @@
 param(
     [Parameter(Mandatory=$true)]
     [ValidateSet("main", "turboquant", "turboquant_3_4", "prismml_ternary", 
-                 "diffusion_gemma", "gemma_external_drafter", "ocr_llama", 
+                 "ocr_llama", 
                  "luce", "dflash", "dspark")]
     [string]$Source,
     
@@ -68,18 +68,6 @@ $sourceConfig = @{
         Url = "https://github.com/PrismML-Eng/llama.cpp.git"
         Branch = "prism"
         Suffix = "prismml.cpp"
-    }
-    "diffusion_gemma" = @{
-        Url = "https://github.com/ggml-org/llama.cpp.git"
-        Branch = "master"
-        PR = 24427
-        Suffix = "diffusion_gemma.cpp"
-    }
-    "gemma_external_drafter" = @{
-        Url = "https://github.com/ggml-org/llama.cpp.git"
-        Branch = "master"
-        PR = 23211
-        Suffix = "gemma_drafter.cpp"
     }
     "ocr_llama" = @{
         Url = "https://github.com/ggml-org/llama.cpp.git"

@@ -16,9 +16,7 @@ class TestConfigDefaults:
         assert tq["branch"] == "feature/turboquant-kv-cache"
 
     def test_pr_sources_have_pr_number(self):
-        for sid, pr in [("diffusion_gemma", 24427),
-                        ("gemma_external_drafter", 23211),
-                        ("ocr_llama", 17400)]:
+        for sid, pr in [("ocr_llama", 17400)]:
             s = next(x for x in config.DEFAULT_BUILD_SOURCES if x["id"] == sid)
             assert s.get("pr") == pr, f"{sid} missing PR"
 
@@ -78,6 +76,6 @@ class TestSourceManager:
 
     def test_validate_source_accepts_pr(self, tmp_project):
         import source_manager
-        s = source_manager.get_source_by_id("diffusion_gemma")
+        s = source_manager.get_source_by_id("ocr_llama")
         valid, _ = source_manager.validate_source(s)
         assert valid

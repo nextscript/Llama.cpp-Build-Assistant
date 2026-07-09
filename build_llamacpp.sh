@@ -8,7 +8,7 @@
 #   ./build_llamacpp.sh -s main -t CPU
 #   ./build_llamacpp.sh -s turboquant -t Vulkan
 #   ./build_llamacpp.sh -s main -t HIP
-#   ./build_llamacpp.sh -s diffusion_gemma -t Vulkan   # PR-based source
+#   ./build_llamacpp.sh -s ocr_llama -t Vulkan       # PR-based source
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -25,7 +25,7 @@ usage() {
     cat <<EOF
 Usage: $0 -s SOURCE -t TYPE [-d INSTALL_DIR] [-j JOBS] [-u] [-U] [-c] [-F FLAGS]
   -s SOURCE      main|turboquant|turboquant_3_4|prismml_ternary|
-                 diffusion_gemma|gemma_external_drafter|ocr_llama|
+                 ocr_llama|
                  luce|dflash|dspark
   -t TYPE        CPU|CUDA|Vulkan|HIP|SYCL|Metal
   -d INSTALL_DIR build output dir (default: ./builds)
@@ -102,8 +102,6 @@ cfg main                   "https://github.com/ggml-org/llama.cpp.git"          
 cfg turboquant             "https://github.com/TheTom/llama-cpp-turboquant.git"   "feature/turboquant-kv-cache"  ""  0 "turboquant.cpp"
 cfg turboquant_3_4         "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant.git" "feature/turboquant-kv-cache" "" 0 "turboquant_3_4.cpp"
 cfg prismml_ternary        "https://github.com/PrismML-Eng/llama.cpp.git"         "prism"                        ""  0 "prismml.cpp"
-cfg diffusion_gemma        "https://github.com/ggml-org/llama.cpp.git"            "master"                   "24427" 0 "diffusion_gemma.cpp"
-cfg gemma_external_drafter "https://github.com/ggml-org/llama.cpp.git"            "master"                   "23211" 0 "gemma_drafter.cpp"
 cfg ocr_llama              "https://github.com/ggml-org/llama.cpp.git"            "master"                   "17400" 0 "ocr_llama.cpp"
 cfg luce                   "https://github.com/Luce-Org/lucebox-hub.git"          "main"                         ""  1 "luce.cpp"
 cfg dflash                 "https://github.com/Anbild/beellama.cpp.git"           "main"                         ""  0 "dflash.cpp"

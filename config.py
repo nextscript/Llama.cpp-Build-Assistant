@@ -72,28 +72,6 @@ DEFAULT_BUILD_SOURCES = [
         "default_cmake_flags": []
     },
     {
-        "id": "diffusion_gemma",
-        "name": "Diffusion Gemma llama.cpp",
-        "repo_url": "https://github.com/ggml-org/llama.cpp",
-        "branch": "master",
-        "pr": 24427,
-        "local_path": os.path.join(REPOS_DIR, "llama-cpp-diffusion-gemma"),
-        "type": "pr",
-        "experimental": True,
-        "default_cmake_flags": []
-    },
-    {
-        "id": "gemma_external_drafter",
-        "name": "Gemma External Drafter / Assistant llama.cpp",
-        "repo_url": "https://github.com/ggml-org/llama.cpp",
-        "branch": "master",
-        "pr": 23211,
-        "local_path": os.path.join(REPOS_DIR, "llama-cpp-gemma-drafter"),
-        "type": "pr",
-        "experimental": True,
-        "default_cmake_flags": []
-    },
-    {
         "id": "ocr_llama",
         "name": "OCR llama.cpp",
         "repo_url": "https://github.com/ggml-org/llama.cpp",

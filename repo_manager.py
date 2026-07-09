@@ -31,7 +31,7 @@ def clone_repo(repo_url, local_path, branch=None, callback=None, pr=None, submod
 
     If *pr* is given, the base repo is cloned and the pull request
     refs/pull/<pr>/head is fetched into a local branch 'pr<pr>' and checked
-    out (PR-based sources such as diffusion_gemma #24427).
+    out (PR-based sources such as ocr_llama #17400).
     If *submodules* is True, clone with --recurse-submodules.
     """
     if pr:
