@@ -47,7 +47,7 @@ Usage: $0 -s SOURCE -t TYPE [-d INSTALL_DIR] [-B BUILD_DIR] [-j JOBS] [-C portab
   -C TARGET      CPU target: portable (AVX2, default) or native (this machine)
   -V MAJOR       CUDA toolkit generation to use (12 or 13; default: newest found)
   -T TARGETS     comma-separated CMake targets (default: everything)
-  -u             force building the web UI with npm (default: npm if installed)
+  -u             build the web UI with npm (default: download prebuilt assets)
   -U             update the existing checkout (git fetch + reset)
   -c             wipe the build directory (clean configure)
   -F FLAGS       extra CMake flags, newline-separated (advanced)
@@ -288,11 +288,16 @@ dir=""
 backend="$(printf '%s' "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
 existing=$(find . -maxdepth 1 -type d -regex "\./\(b[0-9]+\|bUNKNOWN\|pr[0-9]+\|pinned_[0-9a-f]+\)_${backend}_${DIR_SUFFIX}" 2>/dev/null | sort -r | head -1 || true)
 if [[ -n "$existing" && ! -d "$existing/.git" ]]; then
-    # A previous run trimmed the checkout to its build output; it is no
-    # longer a git repository, so clone it fresh.
-    rm -rf "$existing"
+    # Legacy trimmed outputs have no source tree to resume; keep them intact.
     existing=""
 fi
+unused_build_path() {
+    local version="$1" candidate="./${1}_${backend}_${DIR_SUFFIX}"
+    while [[ -e "$candidate" ]]; do
+        candidate="./${version}_run_$(date +%Y%m%d%H%M%S)_${RANDOM}_${backend}_${DIR_SUFFIX}"
+    done
+    printf '%s\n' "$candidate"
+}
 if [[ -n "$existing" ]]; then
     dir="$existing"
     if [[ "$UPDATE_REPO" == "1" ]]; then
@@ -318,13 +323,16 @@ if [[ -n "$existing" ]]; then
         ok "Updated to latest '$REPO_BRANCH'"
         # The build number may have moved: rename the folder to stay truthful.
         newdir="./$(build_number_name "$dir")_${backend}_${DIR_SUFFIX}"
-        if [[ "$newdir" != "$dir" ]]; then rm -rf "$newdir"; mv "$dir" "$newdir"; dir="$newdir"; fi
+        if [[ "$newdir" != "$dir" ]]; then
+            newdir="$(unused_build_path "$(build_number_name "$dir")")"
+            mv "$dir" "$newdir"
+            dir="$newdir"
+        fi
     else
         ok "Existing directory: $dir (skipping update)"
     fi
 else
-    tmp="./_tmp_$SOURCE"
-    rm -rf "$tmp"
+    tmp="$(mktemp -d "./_tmp_${SOURCE}_${backend}_XXXXXXXX")"
     if [[ -n "$SOURCE_COMMIT_ARG" ]]; then
         log "Cloning pinned source from $REPO_URL"
         git clone "$REPO_URL" "$tmp"
@@ -343,23 +351,55 @@ else
         git "${clone_args[@]}" "$REPO_URL" "$tmp"
     fi
     ver="$(build_number_name "$tmp")"
-    dir="./${ver}_${backend}_${DIR_SUFFIX}"
-    rm -rf "$dir"
+    dir="$(unused_build_path "$ver")"
     mv "$tmp" "$dir"
     ok "Directory: $dir"
 fi
 ok "Source commit: $(git -C "$dir" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)"
 
 # ── Web UI ────────────────────────────────────────────────────────────────
-# llama.cpp provisions the server UI at configure time: with LLAMA_BUILD_UI=ON
-# it runs npm (skipped when npm is missing), otherwise it downloads the
-# prebuilt assets. Building with npm is the robust default when npm exists.
-ui_flags=()
-if [[ "$BUILD_UI" == "1" ]] || have npm; then
-    ui_flags=(-DLLAMA_BUILD_UI=ON)
-    if have npm; then ok "Web UI: built from source with npm"; else warn "Web UI: npm not found - CMake falls back to the prebuilt UI download"; fi
+# Build assets explicitly for both the old and the current source layout.
+ui_flags=(-DLLAMA_BUILD_UI=ON -DLLAMA_USE_PREBUILT_UI=ON)
+ui_source=""
+for relative in tools/ui tools/server/webui; do
+    if [[ -f "$dir/$relative/package.json" ]]; then ui_source="$dir/$relative"; break; fi
+done
+if [[ "$BUILD_UI" == "1" && -n "$ui_source" ]] && have npm; then
+    log "Building Web UI: $ui_source"
+    (
+        cd "$ui_source"
+        if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+        npm run build
+    )
+    ui_flags=(-DLLAMA_BUILD_UI=ON -DLLAMA_USE_PREBUILT_UI=OFF)
+    ok "Web UI: built from source"
 else
-    warn "Web UI: npm not found - CMake downloads the prebuilt UI at build time (install Node.js if that fails)"
+    ok "Web UI: using prebuilt assets (download requires internet)"
+fi
+if [[ "$SOURCE" == "ternary_bonsai" ]]; then ui_flags+=(-DLLAMA_OPENSSL=OFF); fi
+
+if [[ "$BUILD_TYPE" == "HIP" || "$BUILD_TYPE" == "CUDA" ]] &&
+   grep -Eq '^[[:space:]]*set[[:space:]]*\([[:space:]]*GGML_CUDA_FA_QUANTS[[:space:]]' "$dir/ggml/CMakeLists.txt"; then
+    ui_flags+=(-UGGML_CUDA_FA_ALL_QUANTS)
+    converted_flags=()
+    explicit_quants=0
+    for flag in "${EXTRA_FLAGS[@]}"; do
+        [[ "$flag" =~ ^-DGGML_CUDA_FA_QUANTS(:STRING)?= ]] && explicit_quants=1
+    done
+    for flag in "${EXTRA_FLAGS[@]}"; do
+        if [[ "$flag" =~ ^-DGGML_CUDA_FA_ALL_QUANTS(:BOOL)?=(ON|OFF)$ ]]; then
+            if [[ "$explicit_quants" == "0" ]]; then
+                if [[ "${BASH_REMATCH[2]}" == "ON" ]]; then
+                    converted_flags+=(-DGGML_CUDA_FA_QUANTS=all)
+                else
+                    converted_flags+=(-UGGML_CUDA_FA_QUANTS)
+                fi
+            fi
+        else
+            converted_flags+=("$flag")
+        fi
+    done
+    EXTRA_FLAGS=("${converted_flags[@]}")
 fi
 
 # ── CMake configure + build ───────────────────────────────────────────────
@@ -386,7 +426,7 @@ case "$UNAME_M" in
             cpu_flags=(-DGGML_NATIVE=ON)
         else
             cpu_flags=(-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
-                       -DGGML_AVX_VNNI=ON -DGGML_BMI2=ON
+                       -DGGML_AVX_VNNI=OFF -DGGML_BMI2=ON
                        -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_AVX512_BF16=OFF)
         fi
         ;;
@@ -469,6 +509,7 @@ cmake --build "$build_dir" --config Release --parallel "$JOBS" ${target_args[@]+
 log "BUILD SUCCESSFUL! ($BUILD_TYPE)"
 bin_path="$build_dir/bin"
 ok "Binaries: $bin_path"
+echo "LLAMA_BUILD_OUTPUT=$(cd "$build_dir" && pwd -P)"
 ( shopt -s nullglob; for f in "$bin_path"/llama-*; do ok "  $(basename "$f")"; done )
 echo
 echo "Start server:"

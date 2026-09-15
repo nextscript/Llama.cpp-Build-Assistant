@@ -73,10 +73,21 @@ def _migrate_profiles(profiles):
 
     Returns (profiles, changed). User-modified profiles are never altered.
     """
-    if os.path.exists(_MIGRATION_MARKER):
-        return profiles, False
-
     changed = False
+    # Refresh untouched CUDA defaults even when the earlier migration ran.
+    profiles = list(profiles)
+    for index, profile in enumerate(profiles):
+        default = _default_by_name(profile.get("name"))
+        if not default or default.get("build_type") != "CUDA":
+            continue
+        old_flags = [flag.replace("-DLLAMA_BUILD_TESTS=ON", "-DLLAMA_BUILD_TESTS=OFF")
+                     for flag in default["cmake_flags"]]
+        if profile.get("build_type") == "CUDA" and profile.get("cmake_flags") == old_flags:
+            profiles[index] = dict(profile, cmake_flags=list(default["cmake_flags"]))
+            changed = True
+    if os.path.exists(_MIGRATION_MARKER):
+        return profiles, changed
+
     result = []
     for prof in profiles:
         name = prof.get("name")

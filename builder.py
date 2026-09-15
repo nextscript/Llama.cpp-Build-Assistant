@@ -1,15 +1,14 @@
 """
 Build module.
 Dispatches to the platform build script (build_llamacpp.ps1 on Windows,
-build_llamacpp.sh elsewhere), streams its output, verifies the result and
-trims the checkout to an Auto-Tuner-compatible layout.
+build_llamacpp.sh elsewhere), streams its output and verifies the result.
+The complete source checkout and build tree are retained.
 """
 import subprocess
 import os
 import json
-import stat
-import time
 import platform
+import re
 from datetime import datetime
 from config import (
     BUILDS_DIR, BUILD_HISTORY_FILE, BUNDLE_DIR, EXE_DIR, get_dir_suffix
@@ -37,12 +36,13 @@ def find_source_checkout(source_id, build_type=None):
     suffix = get_dir_suffix(source)
     if not suffix or not os.path.isdir(BUILDS_DIR):
         return None
-    backend = f"_{build_type.lower()}_" if build_type else "_"
+    backend = re.escape(build_type.lower()) if build_type else "[a-z]+"
+    pattern = re.compile(
+        rf"^(?:b\d+|bUNKNOWN|pr\d+|pinned_[0-9a-f]+)"
+        rf"(?:_run_[0-9_]+)?_{backend}_{re.escape(suffix)}$")
     candidates = []
     for name in os.listdir(BUILDS_DIR):
-        if not name.endswith("_" + suffix):
-            continue
-        if build_type and backend not in name:
+        if not pattern.fullmatch(name):
             continue
         path = os.path.join(BUILDS_DIR, name)
         if os.path.isdir(path):
@@ -50,53 +50,6 @@ def find_source_checkout(source_id, build_type=None):
     if not candidates:
         return None
     return max(candidates, key=os.path.getmtime)
-
-
-def _on_rm_error(func, path, exc_info):
-    # Git marks object files read-only on Windows; clear the bit and retry.
-    try:
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-    except Exception:
-        pass
-
-
-def _remove_with_retry(path, attempts=10, delay=2.0):
-    """Remove a file or directory tree, retrying while files are still locked
-    (MSBuild nodes, antivirus scanners) right after a build."""
-    import shutil
-    for _ in range(attempts):
-        try:
-            if os.path.isdir(path):
-                shutil.rmtree(path, onerror=_on_rm_error)
-            else:
-                try:
-                    os.remove(path)
-                except PermissionError:
-                    os.chmod(path, stat.S_IWRITE)
-                    os.remove(path)
-            return True
-        except FileNotFoundError:
-            return True
-        except Exception:
-            time.sleep(delay)
-    return False
-
-
-def trim_build_folder(checkout_dir):
-    """Keep only build/bin inside the checkout (the Auto-Tuner-compatible
-    layout holding llama-server) and remove the source tree plus all other
-    CMake artifacts."""
-    build_dir = os.path.join(checkout_dir, "build")
-    if os.path.isdir(build_dir):
-        for name in os.listdir(build_dir):
-            if name.lower() == "bin":
-                continue
-            _remove_with_retry(os.path.join(build_dir, name))
-    for name in os.listdir(checkout_dir):
-        if name.lower() == "build":
-            continue
-        _remove_with_retry(os.path.join(checkout_dir, name))
 
 
 def _run_binary(exe, args, timeout=90):
@@ -126,11 +79,12 @@ _BACKEND_DEVICE_PREFIX = {
 def verify_build(binaries, build_type, callback=None):
     """Smoke-test the fresh build: --version and --list-devices of llama-server.
 
-    Returns a dict with "ok", "version", "devices" and "warnings". Problems
-    are reported as warnings; the caller decides whether to fail the build.
+    Returns a dict with "ok", "version", "devices" and "warnings". A failed
+    runtime probe or wrong/missing backend makes the build unusable.
     """
     result = {"ok": True, "version": "", "devices": [], "warnings": []}
-    server = next((b for b in binaries if os.path.basename(b).lower().startswith("llama-server")), None)
+    server = next((b for b in binaries if os.path.basename(b).lower() in
+                   ("llama-server", "llama-server.exe")), None)
     if not server:
         result["ok"] = False
         result["warnings"].append("llama-server was not built (LLAMA_BUILD_SERVER=ON missing?)")
@@ -151,21 +105,27 @@ def verify_build(binaries, build_type, callback=None):
 
     code, out = _run_binary(server, ["--list-devices"], timeout=120)
     if code != 0:
+        result["ok"] = False
         result["warnings"].append(f"llama-server --list-devices failed (exit {code}): {out.strip()[-300:]}")
         return result
     devices = [l.strip() for l in out.splitlines()
-               if l.strip() and ":" in l and not l.lower().startswith("available")]
+               if re.match(r"^\s*(?:CUDA|ROCm|Vulkan|SYCL|Metal)\d+:", l)]
     result["devices"] = devices
     for d in devices:
         say(f"  device: {d}")
 
     prefix = _BACKEND_DEVICE_PREFIX.get(build_type)
     if prefix and not any(d.startswith(prefix) for d in devices):
+        result["ok"] = False
         result["warnings"].append(
             f"No {prefix} device reported by the {build_type} build. The backend was "
             f"not compiled in, or its runtime/driver is missing.")
     if build_type == "CPU" and devices:
+        result["ok"] = False
         result["warnings"].append("CPU build unexpectedly reports GPU devices: " + "; ".join(devices))
+    elif prefix and any(not d.startswith(prefix) for d in devices):
+        result["ok"] = False
+        result["warnings"].append("Build reports an unexpected GPU backend: " + "; ".join(devices))
     return result
 
 
@@ -185,10 +145,8 @@ def run_build(source_id, build_type, update_repo_flag=False,
     core_only:  build only CORE_TARGETS instead of every example/tool.
     cuda_major: "12" / "13" to pin the CUDA toolkit generation, "" = newest.
 
-    After a successful build the checkout is trimmed to an Auto-Tuner-
-    compatible layout: builds/<bNNNN>_<backend>_<suffix>/build/bin/...
-    keeps the finished llama-server while the source tree and all other
-    CMake artifacts are deleted.
+    The complete checkout is kept under builds/<bNNNN>_<backend>_<suffix>/:
+    Git metadata, sources, Web UI assets, CMake projects, libraries and binaries.
     """
     import sys
     import io
@@ -341,15 +299,25 @@ def run_build(source_id, build_type, update_repo_flag=False,
                 callback(msg)
             return False, all_output, msg, [], ""
 
-        # One Auto-Tuner-compatible folder per build: <checkout>/build/bin/...
-        # holds the finished llama-server. Source tree and CMake artifacts
-        # are removed afterwards.
-        checkout_dir = find_source_checkout(source_id, build_type)
-        cmake_dir = os.path.join(checkout_dir, "build") if checkout_dir else None
-        binaries = find_binaries(cmake_dir) if cmake_dir else []
-        if not binaries:
-            # Fallback for unexpected layouts: keep whatever is in build_path.
-            binaries = find_binaries(build_path)
+        # Use this invocation's output, never a different build selected by mtime.
+        marker = "LLAMA_BUILD_OUTPUT="
+        cmake_dir = next((line[len(marker):] for line in reversed(all_output)
+                          if line.startswith(marker)), "")
+        if not cmake_dir or not os.path.isabs(cmake_dir):
+            msg = "Build script did not report its output directory."
+            if callback:
+                callback(msg)
+            return False, all_output, msg, [], ""
+        cmake_dir = os.path.realpath(cmake_dir)
+        checkout_dir = os.path.dirname(cmake_dir)
+        if (os.path.normcase(os.path.dirname(checkout_dir)) !=
+                os.path.normcase(os.path.realpath(BUILDS_DIR)) or
+                os.path.basename(cmake_dir).lower() != "build"):
+            msg = f"Unexpected build output directory: {cmake_dir}"
+            if callback:
+                callback(msg)
+            return False, all_output, msg, [], ""
+        binaries = find_binaries(cmake_dir)
         if not binaries:
             msg = ("The build script reported success but no llama-* executables were "
                    f"found under {cmake_dir or build_path}.")
@@ -366,11 +334,13 @@ def run_build(source_id, build_type, update_repo_flag=False,
             if callback:
                 callback(f"WARNING: {warning}")
 
-        if checkout_dir and os.path.isdir(checkout_dir):
+        if not verification["ok"]:
+            msg = "Build verification failed: " + "; ".join(verification["warnings"])
             if callback:
-                callback(f"Cleaning up source/CMake files in: {checkout_dir}")
-            trim_build_folder(checkout_dir)
-            build_path = checkout_dir
+                callback(msg)
+            return False, all_output, msg, binaries, checkout_dir
+
+        build_path = checkout_dir
 
         if callback:
             callback("=" * 60)

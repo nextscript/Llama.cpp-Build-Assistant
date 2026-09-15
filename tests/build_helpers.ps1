@@ -1,0 +1,103 @@
+param([string]$ScriptPath, [string]$Workspace)
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw ($errors | Out-String) }
+foreach ($name in @("Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls")) {
+    $definition = $ast.Find({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $true)
+    if (-not $definition) { throw "Missing function: $name" }
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+function Log($msg) {}
+function OK($msg) {}
+function Is-Available($cmd) { return $true }
+function npm.cmd {
+    $script:Calls += ($args -join " ")
+    Write-Output "npm stdout must not become a CMake argument"
+    $global:LASTEXITCODE = $script:NpmExit
+}
+$script:NpmExit = 0
+
+foreach ($layout in @("tools/ui", "tools/server/webui")) {
+    $repo = Join-Path $Workspace ($layout.Replace('/', '_'))
+    $ui = Join-Path $repo $layout
+    New-Item -ItemType Directory -Path $ui -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $ui "package.json") | Out-Null
+    New-Item -ItemType File -Path (Join-Path $ui "package-lock.json") | Out-Null
+    $script:Calls = @()
+    $flags = @(Get-WebUiFlags -Repo $repo -Enabled $true)
+    if (($script:Calls -join ',') -ne 'ci,run build') { throw "npm did not build $layout" }
+    if ($flags -notcontains '-DLLAMA_USE_PREBUILT_UI=OFF') { throw "Local UI was not selected" }
+    if ($flags.Count -ne 2) { throw "npm output leaked into CMake flags" }
+    $script:Calls = @()
+    $flags = @(Get-WebUiFlags -Repo $repo -Enabled $false)
+    if ($script:Calls.Count -or $flags -notcontains '-DLLAMA_USE_PREBUILT_UI=ON') {
+        throw "Disabled source build did not use prebuilt UI"
+    }
+    $script:NpmExit = 1
+    $before = (Get-Location).Path
+    $failed = $false
+    try { Get-WebUiFlags -Repo $repo -Enabled $true | Out-Null } catch { $failed = $true }
+    if (-not $failed -or (Get-Location).Path -ne $before) { throw "npm failure was swallowed or cwd leaked" }
+    $script:NpmExit = 0
+}
+$flags = @(Get-WebUiFlags -Repo $Workspace -Enabled $true)
+if ($flags -notcontains '-DLLAMA_USE_PREBUILT_UI=ON') { throw "Missing source must use prebuilt UI" }
+
+$InstallDir = $Workspace
+$backend = "cpu"
+$DIR_SUFFIX = "llama.cpp"
+$existing = Join-Path $Workspace "b10000_cpu_llama.cpp"
+New-Item -ItemType Directory -Path $existing | Out-Null
+$candidate = Get-UnusedBuildPath "b10000"
+if ($candidate -eq $existing -or -not (Test-Path $existing)) { throw "Existing output was not preserved" }
+if ((Split-Path $candidate -Leaf) -notmatch '^b10000_run_\d+_cpu_llama\.cpp$') { throw "Bad output name" }
+
+$options = Join-Path $Workspace "ggml"
+New-Item -ItemType Directory -Path $options | Out-Null
+$options = Join-Path $options "CMakeLists.txt"
+Set-Content $options 'option(GGML_CUDA_FA_ALL_QUANTS "All quants" OFF)'
+$flags = @(Convert-FlashAttentionFlags -Repo $Workspace -Flags @('-DGGML_CUDA_FA_ALL_QUANTS=ON'))
+if ($flags -notcontains '-DGGML_CUDA_FA_ALL_QUANTS=ON') { throw "Old fork option changed" }
+Set-Content $options 'set (GGML_CUDA_FA_QUANTS "f16-f16" CACHE STRING "Quants")'
+$flags = @(Convert-FlashAttentionFlags -Repo $Workspace -Flags @('-DGGML_CUDA_FA_ALL_QUANTS=ON'))
+if ($flags -notcontains '-DGGML_CUDA_FA_QUANTS=all' -or $flags -notcontains '-UGGML_CUDA_FA_ALL_QUANTS') {
+    throw "Modern option was not migrated"
+}
+$flags = @(Convert-FlashAttentionFlags -Repo $Workspace -Flags @('-DGGML_CUDA_FA_ALL_QUANTS=OFF'))
+if ($flags -notcontains '-UGGML_CUDA_FA_QUANTS') { throw "Legacy OFF did not restore the source default" }
+$flags = @(Convert-FlashAttentionFlags -Repo $Workspace -Flags @('-DGGML_CUDA_FA_ALL_QUANTS=ON', '-DGGML_CUDA_FA_QUANTS:STRING=f16-f16'))
+if ($flags -contains '-DGGML_CUDA_FA_QUANTS=all' -or $flags -notcontains '-DGGML_CUDA_FA_QUANTS:STRING=f16-f16') {
+    throw "Explicit quant list was overridden"
+}
+$cudaBin = Join-Path $Workspace "CUDA SDK bin"
+$destination = Join-Path $Workspace "output bin"
+New-Item -ItemType Directory -Path $cudaBin | Out-Null
+$dllNames = @("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll",
+              "nvJitLink_130_0.dll", "nvrtc64_130_0.dll", "nvrtc-builtins64_130.dll")
+foreach ($name in $dllNames) { Set-Content (Join-Path $cudaBin $name) $name }
+Deploy-CudaRuntimeDlls -CudaBin $cudaBin -Destination $destination
+foreach ($name in $dllNames) {
+    if ((Get-Content (Join-Path $destination $name)) -ne $name) { throw "CUDA DLL not copied: $name" }
+}
+$x64Bin = Join-Path $cudaBin "x64"
+$arm64Bin = Join-Path $cudaBin "arm64"
+New-Item -ItemType Directory -Path $x64Bin, $arm64Bin | Out-Null
+foreach ($name in $dllNames) {
+    Set-Content (Join-Path $x64Bin $name) "x64 $name"
+    Set-Content (Join-Path $arm64Bin $name) "arm64 $name"
+}
+Deploy-CudaRuntimeDlls -CudaBin $cudaBin -Destination $destination
+foreach ($name in $dllNames) {
+    if ((Get-Content (Join-Path $destination $name)) -ne "x64 $name") { throw "Wrong CUDA architecture: $name" }
+}
+$incomplete = Join-Path $Workspace "incomplete CUDA bin"
+New-Item -ItemType Directory -Path $incomplete | Out-Null
+Set-Content (Join-Path $incomplete "cudart64_13.dll") "incomplete SDK"
+$failed = $false
+try { Deploy-CudaRuntimeDlls -CudaBin $incomplete -Destination $destination } catch { $failed = $true }
+if (-not $failed) { throw "Stale destination DLLs masked an incomplete CUDA SDK" }
+Write-Output "Build helper checks passed"

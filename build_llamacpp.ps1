@@ -609,6 +609,36 @@ function Copy-HipRuntimeDependencies {
     OK "Bundled $copied ROCm runtime DLL(s) from $src"
 }
 
+function Deploy-CudaRuntimeDlls {
+    param(
+        [Parameter(Mandatory=$true)][string]$CudaBin,
+        [Parameter(Mandatory=$true)][string]$Destination
+    )
+    # New toolkits separate x64 and ARM64 DLLs; this script builds x64.
+    $x64Bin = Join-Path $CudaBin "x64"
+    if (Test-Path -LiteralPath $x64Bin -PathType Container) { $CudaBin = $x64Bin }
+    if (-not (Test-Path -LiteralPath $CudaBin -PathType Container)) {
+        throw "CUDA runtime directory not found: $CudaBin"
+    }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $required = @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
+    # Validate the selected toolkit, so stale destination DLLs cannot mask an
+    # incomplete SDK. JIT/NVRTC dependencies are deployed when supplied by it.
+    foreach ($pattern in $required) {
+        if (-not (Get-ChildItem -LiteralPath $CudaBin -Filter $pattern -File)) {
+            throw "Required CUDA runtime DLL missing from ${CudaBin}: $pattern"
+        }
+    }
+    $copied = 0
+    foreach ($pattern in ($required + @("nvJitLink_*.dll", "nvrtc64_*.dll", "nvrtc-builtins64_*.dll"))) {
+        foreach ($dll in (Get-ChildItem -LiteralPath $CudaBin -Filter $pattern -File)) {
+            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $Destination $dll.Name) -Force
+            $copied++
+        }
+    }
+    OK "Bundled $copied CUDA runtime DLL(s) from $CudaBin"
+}
+
 function Get-CudaToolkits {
     # All installed CUDA toolkits, newest first (numeric sort, not string sort).
     $base = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
@@ -1045,13 +1075,19 @@ $gitLongPaths = @("-c", "core.longpaths=true")
 # Backend-qualified, Auto-Tuner-compatible folder name, e.g.
 # "b10830_vulkan_llama.cpp". One folder per source+version+backend.
 $backend = $BuildType.ToLower()
-$versionPrefixPattern = "(?:b\d+|bUNKNOWN|pr\d+|pinned_[0-9a-f]+)"
-$existingDir = Get-ChildItem $InstallDir -Directory | Where-Object { $_.Name -match "^${versionPrefixPattern}_${backend}_$([regex]::Escape($DIR_SUFFIX))$" } | Sort-Object Name -Descending | Select-Object -First 1
-if ($existingDir -and -not (Test-Path (Join-Path $existingDir.FullName ".git"))) {
-    # A previous run trimmed the checkout to its build output; it is no
-    # longer a git repository, so clone it fresh.
-    Remove-PathWithRetry $existingDir.FullName
-    $existingDir = $null
+$versionPrefixPattern = "(?:b\d+|bUNKNOWN|pr\d+|pinned_[0-9a-f]+)(?:_run_[0-9_]+)?"
+$existingDir = Get-ChildItem $InstallDir -Directory | Where-Object {
+    $_.Name -match "^${versionPrefixPattern}_${backend}_$([regex]::Escape($DIR_SUFFIX))$" -and
+    (Test-Path (Join-Path $_.FullName ".git"))
+} | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+function Get-UnusedBuildPath([string]$Version) {
+    $candidate = Join-Path $InstallDir "${Version}_${backend}_$DIR_SUFFIX"
+    while (Test-Path -LiteralPath $candidate) {
+        $stamp = Get-Date -Format "yyyyMMddHHmmssfffffff"
+        $candidate = Join-Path $InstallDir "${Version}_run_${stamp}_${backend}_$DIR_SUFFIX"
+    }
+    return $candidate
 }
 
 function Get-BuildNumberName {
@@ -1098,7 +1134,7 @@ if ($existingDir) {
         $newName = "$(Get-BuildNumberName -Repo $dir)_${backend}_$DIR_SUFFIX"
         $newDir = Join-Path $InstallDir $newName
         if ($newDir -ne $dir) {
-            if (Test-Path -LiteralPath $newDir) { Remove-PathWithRetry $newDir }
+            if (Test-Path -LiteralPath $newDir) { $newDir = Get-UnusedBuildPath (Get-BuildNumberName -Repo $dir) }
             Move-PathWithRetry $dir $newDir
             $dir = $newDir
         }
@@ -1106,8 +1142,7 @@ if ($existingDir) {
         OK "Found existing directory: $dir (skipping update)"
     }
 } else {
-    $tmpDir = Join-Path $InstallDir "_tmp_$Source"
-    if (Test-Path -LiteralPath $tmpDir) { Remove-PathWithRetry $tmpDir }
+    $tmpDir = Join-Path $InstallDir "_tmp_${Source}_${backend}_$([guid]::NewGuid().ToString('N'))"
 
     if ($SourceCommit) {
         Log "Cloning pinned source from $REPO_URL"
@@ -1146,9 +1181,8 @@ if ($existingDir) {
     }
     git -C $tmpDir config core.longpaths true | Out-Null
     $ver = Get-BuildNumberName -Repo $tmpDir
-    $dir = Join-Path $InstallDir "${ver}_${backend}_$DIR_SUFFIX"
+    $dir = Get-UnusedBuildPath $ver
     Set-Location $InstallDir
-    if (Test-Path -LiteralPath $dir) { Remove-PathWithRetry $dir }
     Move-PathWithRetry $tmpDir $dir
     OK "Directory: $dir"
 }
@@ -1171,32 +1205,79 @@ if ($CleanBuild -and (Test-Path $buildDir)) {
 }
 New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 
-# CPU instruction-set target. "portable" = x86-64-v3 (AVX2/FMA/F16C, plus
-# AVX-VNNI/BMI2 which llama.cpp only uses when the CPU has them at runtime),
-# runs on every CPU since Haswell/Zen1. "native" = llama.cpp's own CPUID
+# CPU instruction-set target. "portable" = x86-64-v3 (AVX2/FMA/F16C/BMI2).
+# AVX-VNNI requires newer CPUs and cannot be enabled in a portable binary.
+# "native" = llama.cpp's own CPUID
 # detection (AVX512/AMX) - only for the machine that builds it.
 $cpuFlags = @()
 if ($CpuTarget -eq "native") {
     $cpuFlags = @("-DGGML_NATIVE=ON")
 } else {
     $cpuFlags = @("-DGGML_NATIVE=OFF", "-DGGML_AVX=ON", "-DGGML_AVX2=ON", "-DGGML_FMA=ON", "-DGGML_F16C=ON",
-                  "-DGGML_AVX_VNNI=ON", "-DGGML_BMI2=ON",
+                  "-DGGML_AVX_VNNI=OFF", "-DGGML_BMI2=ON",
                   "-DGGML_AVX512=OFF", "-DGGML_AVX512_VBMI=OFF", "-DGGML_AVX512_VNNI=OFF", "-DGGML_AVX512_BF16=OFF")
 }
 OK "CPU target: $CpuTarget"
 
-# Web UI. llama.cpp provisions the server UI at configure time: with
-# LLAMA_BUILD_UI=ON it runs npm (skipped automatically when npm is missing),
-# otherwise it downloads the prebuilt assets from Hugging Face. The download
-# fails on some Windows machines (CMake's bundled curl: "SSL connect error"),
-# so building with npm is the robust default whenever npm is installed.
-$uiFlags = @()
-$npmAvailable = (Is-Available "npm") -or (Is-Available "npm.cmd")
-if ($BuildUi -or $npmAvailable) {
-    $uiFlags = @("-DLLAMA_BUILD_UI=ON")
-    if ($npmAvailable) { OK "Web UI: built from source with npm" } else { WARN "Web UI: npm not found - CMake falls back to downloading the prebuilt UI" }
-} else {
-    WARN "Web UI: npm not found - CMake downloads the prebuilt UI at build time (needs internet; install Node.js if that fails)"
+# Both layouts occur in supported forks. CMake consumes the npm output when
+# LLAMA_USE_PREBUILT_UI=OFF; LLAMA_BUILD_UI alone does not build these assets.
+function Get-WebUiFlags {
+    param([string]$Repo, [bool]$Enabled)
+    $uiFlags = @("-DLLAMA_BUILD_UI=ON", "-DLLAMA_USE_PREBUILT_UI=ON")
+    $npmAvailable = Is-Available "npm.cmd"
+    $uiSource = $null
+    foreach ($relative in @("tools/ui", "tools/server/webui")) {
+        $candidate = Join-Path $Repo $relative
+        if (Test-Path (Join-Path $candidate "package.json")) { $uiSource = $candidate; break }
+    }
+    if ($Enabled -and $uiSource -and $npmAvailable) {
+        Log "Building Web UI: $uiSource"
+        Push-Location $uiSource
+        try {
+            if (Test-Path "package-lock.json") { & npm.cmd ci | Out-Host } else { & npm.cmd install | Out-Host }
+            if ($LASTEXITCODE -ne 0) { throw "Web UI dependency install failed (exit $LASTEXITCODE)" }
+            & npm.cmd run build | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Web UI build failed (exit $LASTEXITCODE)" }
+        } finally {
+            Pop-Location
+        }
+        $uiFlags = @("-DLLAMA_BUILD_UI=ON", "-DLLAMA_USE_PREBUILT_UI=OFF")
+        OK "Web UI: built from source"
+    } else {
+        OK "Web UI: using prebuilt assets (download requires internet)"
+    }
+    return $uiFlags
+}
+
+$uiFlags = @(Get-WebUiFlags -Repo $dir -Enabled ([bool]$BuildUi))
+
+if ($Source -eq "ternary_bonsai" -and -not (Test-ExtraFlag "-DLLAMA_OPENSSL=")) {
+    $uiFlags += "-DLLAMA_OPENSSL=OFF"
+}
+
+# The flash-attention option changed upstream; pinned forks retain the boolean.
+function Convert-FlashAttentionFlags {
+    param([string]$Repo, [string[]]$Flags)
+    $optionsFile = Join-Path $Repo "ggml\CMakeLists.txt"
+    if (-not (Test-Path $optionsFile) -or
+        (Get-Content $optionsFile -Raw) -notmatch '(?m)^\s*set\s*\(\s*GGML_CUDA_FA_QUANTS\b') {
+        return $Flags
+    }
+    "-UGGML_CUDA_FA_ALL_QUANTS"
+    $explicitQuants = @($Flags | Where-Object { $_ -match '^-DGGML_CUDA_FA_QUANTS(?::STRING)?=' }).Count -gt 0
+    foreach ($flag in $Flags) {
+        if ($flag -match '^-DGGML_CUDA_FA_ALL_QUANTS(?::BOOL)?=(ON|OFF)$') {
+            if (-not $explicitQuants) {
+                if ($Matches[1] -eq "ON") { "-DGGML_CUDA_FA_QUANTS=all" } else {
+                    # OFF meant the source's default subset, not a literal "off" list.
+                    "-UGGML_CUDA_FA_QUANTS"
+                }
+            }
+        } else { $flag }
+    }
+}
+if ($BuildType -in @("HIP", "CUDA")) {
+    $extraFlagList = @(Convert-FlashAttentionFlags -Repo $dir -Flags $extraFlagList)
 }
 
 $buildTargetArgs = @()
@@ -1207,6 +1288,7 @@ function Show-Result {
     Log "BUILD SUCCESSFUL! ($Label)"
     OK "Binaries: $BinPath"
     $exes = Get-ChildItem $BinPath -Filter "*.exe" -ErrorAction SilentlyContinue
+    Write-Host "LLAMA_BUILD_OUTPUT=$([IO.Path]::GetFullPath($buildDir))"
     if ($exes) { $exes | ForEach-Object { OK "  $($_.Name)" } }
     Write-Host "`nStart server:" -ForegroundColor Green
     Write-Host "  $BinPath\llama-server.exe -m <model.gguf> --host 0.0.0.0 --port 8080" -ForegroundColor Green
@@ -1289,12 +1371,15 @@ if ($BuildType -eq "HIP") {
         "-DCMAKE_CXX_COMPILER=$clangxxExe",
         "-DGGML_HIP=ON",
         "-DGGML_CUDA=OFF",
+        "-DGGML_VULKAN=OFF",
+        "-DGGML_CUDA_NO_PEER_COPY=ON",
         "-DBUILD_SHARED_LIBS=OFF", "-DLLAMA_BUILD_SERVER=ON",
         "-DLLAMA_CURL=OFF", "-DGGML_CCACHE=OFF"
     ) + $cpuFlags + $uiFlags
     if ($amdGfxTarget -and -not (Test-ExtraFlag "-DGPU_TARGETS=")) { $cmakeFlags += "-DGPU_TARGETS=$amdGfxTarget" }
     if ($hipResourceDir) {
-        $cmakeFlags += @("-DCMAKE_C_FLAGS=-resource-dir=$hipResourceDir", "-DCMAKE_CXX_FLAGS=-resource-dir=$hipResourceDir")
+        $resourceFlag = '-resource-dir="' + $hipResourceDir.Replace('\', '/') + '"'
+        $cmakeFlags += @("-DCMAKE_C_FLAGS=$resourceFlag", "-DCMAKE_CXX_FLAGS=$resourceFlag")
     }
     if ($extraFlagList.Count -gt 0) { $cmakeFlags += $extraFlagList; Log "Extra flags: $($extraFlagList -join ' ')" }
 
@@ -1402,13 +1487,6 @@ if ($LASTEXITCODE -ne 0) {
 
 $binPath = Join-Path $buildDir "bin\Release"
 if ($BuildType -eq "CUDA" -and $cudaInstallDir) {
-    # Static cudart is linked, but cuBLAS stays dynamic: ship its DLLs.
-    $copied = 0
-    foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
-        Get-ChildItem -Path (Join-Path $cudaInstallDir "bin") -Filter $pattern -File -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName -Destination $binPath -Force; $copied++
-        }
-    }
-    OK "Bundled $copied CUDA runtime DLL(s)"
+    Deploy-CudaRuntimeDlls -CudaBin (Join-Path $cudaInstallDir "bin") -Destination $binPath
 }
 Show-Result -BinPath $binPath -Label $BuildType
