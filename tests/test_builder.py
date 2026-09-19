@@ -1,4 +1,5 @@
 """Regression tests for output selection and the executable verification gate."""
+import base64
 import io
 import os
 from unittest.mock import Mock
@@ -99,3 +100,30 @@ def test_missing_output_cannot_reuse_old_binaries(tmp_path, monkeypatch, marker)
     result = builder.run_build("main", "CPU")
     assert not result[0]
     verify.assert_not_called()
+
+
+def test_windows_profile_flags_are_transferred_losslessly(tmp_path, monkeypatch):
+    monkeypatch.setattr(builder, "BUILDS_DIR", str(tmp_path))
+    monkeypatch.setattr(builder, "get_source_by_id", lambda _: {"id": "main"})
+    monkeypatch.setattr(builder.platform, "system", lambda: "Windows")
+    monkeypatch.setattr("sys.stdout", None)
+    checkout = tmp_path / "b10000_cpu_llama.cpp"
+    binary = checkout / "build" / "bin" / "llama-server.exe"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    process = Mock(returncode=0, stdout=io.StringIO(
+        f"LLAMA_BUILD_OUTPUT={checkout / 'build'}\n"))
+    monkeypatch.setattr(builder.subprocess, "Popen", Mock(return_value=process))
+    monkeypatch.setattr(builder, "_run_binary", Mock(side_effect=[
+        (0, "version: test"), (0, "Available devices:\n")]))
+    flags = ["-DFOO=ON", "-DCMAKE_CXX_FLAGS=-O3 -march=native",
+             "-DCMAKE_CUDA_ARCHITECTURES=75;89"]
+
+    result = builder.run_build("main", "CPU", custom_flags=flags)
+
+    assert result[0]
+    command = builder.subprocess.Popen.call_args.args[0]
+    assert "-ExtraFlags" not in command
+    value = command[command.index("-ExtraFlagsBase64") + 1]
+    decoded = [base64.b64decode(item).decode("utf-8") for item in value.split(",")]
+    assert decoded == flags

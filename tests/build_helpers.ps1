@@ -4,7 +4,7 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @("Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls")) {
+foreach ($name in @("Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls", "ConvertFrom-EncodedCMakeFlags")) {
     $definition = $ast.Find({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }, $true)
@@ -14,6 +14,19 @@ foreach ($name in @("Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAtten
 function Log($msg) {}
 function OK($msg) {}
 function Is-Available($cmd) { return $true }
+
+$encodedFlags = @(
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('-DFOO=ON')),
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('-DCMAKE_CXX_FLAGS=-O3 -march=native')),
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('-DCMAKE_CUDA_ARCHITECTURES=75;89'))
+) -join ','
+$decodedFlags = @(ConvertFrom-EncodedCMakeFlags -Value $encodedFlags)
+if ($decodedFlags.Count -ne 3 -or
+    $decodedFlags[0] -ne '-DFOO=ON' -or
+    $decodedFlags[1] -ne '-DCMAKE_CXX_FLAGS=-O3 -march=native' -or
+    $decodedFlags[2] -ne '-DCMAKE_CUDA_ARCHITECTURES=75;89') {
+    throw "Encoded CMake profile flags were changed"
+}
 function npm.cmd {
     $script:Calls += ($args -join " ")
     Write-Output "npm stdout must not become a CMake argument"

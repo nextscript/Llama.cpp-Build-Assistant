@@ -30,6 +30,7 @@ param(
     [switch]$Update,
     [switch]$CleanBuild,
     [string]$ExtraFlags = "",
+    [string]$ExtraFlagsBase64 = "",
     [string]$RepoUrl = "",
     [string]$RepoBranch = "",
     [string]$DirSuffix = "",
@@ -114,11 +115,29 @@ if ($BuildType -eq "Metal") {
     exit 1
 }
 
-# Parse extra CMake flags (newline-separated string -> array). User-supplied
-# flags are appended last so they take precedence over the defaults.
+function ConvertFrom-EncodedCMakeFlags {
+    param([string]$Value)
+    if (-not $Value) { return }
+    foreach ($encodedFlag in ($Value -split ",")) {
+        if (-not $encodedFlag) { continue }
+        try {
+            $decodedFlag = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encodedFlag)).Trim()
+        } catch {
+            throw "Invalid encoded CMake profile flag: $($_.Exception.Message)"
+        }
+        if ($decodedFlag) { $decodedFlag }
+    }
+}
+
+# Parse extra CMake flags. User-supplied flags are appended last so they take
+# precedence over defaults. ExtraFlags remains available for direct CLI use;
+# the GUI uses the encoded form so every list item survives as one argument.
 $extraFlagList = @()
 if ($ExtraFlags) {
     $extraFlagList = $ExtraFlags -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
+if ($ExtraFlagsBase64) {
+    $extraFlagList += @(ConvertFrom-EncodedCMakeFlags -Value $ExtraFlagsBase64)
 }
 $targetList = @()
 if ($Targets) {

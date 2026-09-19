@@ -7,6 +7,7 @@ The complete source checkout and build tree are retained.
 import subprocess
 import os
 import json
+import base64
 import platform
 import re
 from datetime import datetime
@@ -175,9 +176,17 @@ def run_build(source_id, build_type, update_repo_flag=False,
     if jobs <= 0:
         jobs = os.cpu_count() or 4
 
-    # Custom CMake flags are passed as a newline-joined string so that flags
-    # may contain spaces (e.g. -DCMAKE_PREFIX_PATH=...) without quoting issues.
-    flags_str = "\n".join(custom_flags) if custom_flags else ""
+    # Keep every profile entry as one CMake argument.  On Windows the flags are
+    # encoded individually because a multiline command-line value can be
+    # rewritten by launchers used for frozen/windowed applications.
+    if isinstance(custom_flags, str):
+        custom_flags = custom_flags.splitlines()
+    profile_flags = []
+    for value in custom_flags or []:
+        if not isinstance(value, str):
+            continue
+        profile_flags.extend(line.strip() for line in value.splitlines() if line.strip())
+    flags_str = "\n".join(profile_flags)
     targets_str = ",".join(CORE_TARGETS) if core_only else ""
     dir_suffix = get_dir_suffix(source)
 
@@ -222,8 +231,12 @@ def run_build(source_id, build_type, update_repo_flag=False,
             cmd.append("-CleanBuild")
         if build_ui:
             cmd.append("-BuildUi")
-        if flags_str:
-            cmd += ["-ExtraFlags", flags_str]
+        if profile_flags:
+            encoded_flags = ",".join(
+                base64.b64encode(flag.encode("utf-8")).decode("ascii")
+                for flag in profile_flags
+            )
+            cmd += ["-ExtraFlagsBase64", encoded_flags]
     else:
         script_path = os.path.join(BUNDLE_DIR, "build_llamacpp.sh")
         if not os.path.exists(script_path):
@@ -267,6 +280,10 @@ def run_build(source_id, build_type, update_repo_flag=False,
                  + (f"  Targets: {targets_str}" if targets_str else "")
                  + (f"  CUDA: {cuda_major}.x" if cuda_major else ""))
         callback(f"  Script: {script_path}")
+        if profile_flags:
+            callback("  Profile CMake flags:")
+            for flag in profile_flags:
+                callback(f"    {flag}")
         callback("=" * 60)
 
     try:
