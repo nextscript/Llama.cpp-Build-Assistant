@@ -11,13 +11,13 @@ macOS, Ubuntu and other Linux distros**.
 
 - **Automatic Hardware Detection** — CPU, RAM, GPU, VRAM, CUDA, Vulkan, ROCm/HIP, SYCL, free disk
 - **Dependency Checker / Auto-Install** — `winget` (Windows), `apt`/`dnf`/`pacman`/`zypper` (Linux), Homebrew (macOS)
-- **Multiple Sources** — official + experimental `llama.cpp` forks (see below)
+- **Multiple Sources** — official + experimental `llama.cpp` forks, with automatic remote branch discovery for custom repositories
 - **Build Profiles** — pre-configured profiles for quick setup
 - **Custom Build Output** — choose and persist a build directory, with write-access and free-space checks
 - **Build Version Status** — compare local and remote Git revisions and inspect new commits
 - **Live Logs** — real-time build output
 - **Build History** — all build results saved for reference
-- 
+
 <h2>Screenshots</h2>
 
 <table>
@@ -63,8 +63,9 @@ AVX-512/AMX for the machine that builds it. Profiles no longer pin the ISA.
 `builds/<bNNNN>_<backend>_<suffix>/build/bin/…`, e.g.
 `b10830_vulkan_llama.cpp`. `bNNNN` is `git rev-list --count HEAD`, the same
 number `llama-server --version` prints. After the build the source tree is
-removed; only `build/bin` stays. HIP builds bundle the ROCm runtime DLLs and
-link the `rocblas/`/`hipblaslt/` kernel folders; CUDA builds bundle
+retained together with Git metadata, web-UI assets, CMake projects, libraries,
+and binaries. HIP builds bundle the ROCm runtime DLLs and link the
+`rocblas/`/`hipblaslt/` kernel folders; CUDA builds bundle
 `cudart`/`cublas`. Every build ends with `llama-server --version` and
 `--list-devices` so a wrong backend is visible in the log.
 
@@ -141,6 +142,68 @@ The tests cover the recommendation logic with synthetic hardware reports
 run on any platform.
 
 ## Changelog
+
+### 2.3.6
+
+- Added asynchronous remote branch discovery for custom build sources using
+  `git ls-remote`, including repository default-branch detection, refresh,
+  custom refs, validation, and offline/error fallback.
+- Replaced the branch field with a fast searchable selector that remains
+  responsive with large repositories. Background Git queries no longer open a
+  console window on Windows.
+- Reorganized Build Configuration: Build Version Status now follows the
+  selected profile, uses a compact four-row/two-column layout, and Build Output
+  Directory appears below Build Options.
+- The npm web-UI checkbox is disabled whenever the selected profile explicitly
+  sets `LLAMA_BUILD_UI=OFF`.
+- Improved dashboard recommendation alignment and status coloring.
+
+### 2.3.5
+
+- Removed the Update Source button and its GUI update workflow from Build
+  Version Status.
+- Kept asynchronous version checks, update-availability reporting, and the
+  View Changes dialog intact.
+
+### 2.3.4
+
+- Added a persistent custom build output directory with Browse and Reset to
+  Default controls, write-access checks, and free-space validation.
+- Added asynchronous Git-based version status for branches, forks, custom
+  sources, pinned commits, and pull requests.
+- Added local/remote commits, build numbers, commit differences, branch and PR
+  information, last-update dates, and a commit changes dialog.
+- Recorded the exact build number, commit SHA, and branch in build history.
+- Added regression coverage for settings, output routing, source-version
+  checks, source updates, and history metadata.
+
+### 2.3.3
+
+- Added row-based CMake flag editing with add/remove controls and improved
+  multiline profile editing with automatic dialog resizing.
+- Added the CUDA 13.x NVIDIA profile for PrismML.
+- Added K2Horizon.cpp and beellama.cpp build sources.
+- Updated PrismML to track the current `prism` branch instead of a pinned
+  commit and increased the build-source dialog height.
+
+### 2.3.2
+
+- Preserved profile CMake flags losslessly on Windows by encoding each flag as
+  an individual command-line value.
+- Normalized multiline custom flags, logged the effective profile flags, and
+  ensured user flags retain precedence over build defaults.
+- Added regression coverage for flags containing spaces and semicolons.
+
+### 2.3.1
+
+- Preserved complete llama.cpp source checkouts and build trees instead of
+  trimming successful builds to `build/bin`.
+- Built the complete tools/examples/test output, provisioned web-UI assets,
+  and bundled required CUDA runtime dependencies.
+- Tightened post-build backend verification and output-directory selection so
+  a build cannot accidentally reuse binaries from another checkout.
+- Added regression coverage for checkout preservation, UI layouts, CUDA DLL
+  deployment, backend verification, and profile migration.
 
 ### 2.3.0
 
