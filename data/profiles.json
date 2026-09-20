@@ -169,5 +169,24 @@
     ],
     "clean_build": true,
     "update_repo": true
+  },
+  {
+    "name": "CUDA 13.x NVIDIA (PrismML)",
+    "build_type": "CUDA",
+    "cmake_flags": [
+      "-DGGML_CUDA=ON",
+      "-DGGML_VULKAN=OFF",
+      "-DGGML_LTO=OFF",
+      "-DBUILD_SHARED_LIBS=OFF",
+      "-DLLAMA_BUILD_SERVER=ON",
+      "-DLLAMA_BUILD_TESTS=OFF",
+      "-DLLAMA_BUILD_TOOLS=ON",
+      "-DLLAMA_BUILD_EXAMPLES=OFF",
+      "-DLLAMA_CURL=OFF",
+      "-DGGML_CCACHE=OFF"
+    ],
+    "clean_build": true,
+    "update_repo": true,
+    "experimental": false
   }
 ]

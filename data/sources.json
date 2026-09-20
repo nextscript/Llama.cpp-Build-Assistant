@@ -25,7 +25,6 @@
     "name": "PrismML Ternary/Bonsai",
     "repo_url": "https://github.com/PrismML-Eng/llama.cpp",
     "branch": "prism",
-    "commit": "e311ed38fe7ab8fb577a5435b049d48b7d040923",
     "local_path": "repos/llama-cpp-prismml-ternary",
     "type": "fork",
     "experimental": true,
@@ -55,6 +54,26 @@
     "local_path": "repos/llama-cpp-diffusion-gemma",
     "type": "pr",
     "experimental": true,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "k2horizon_cpp",
+    "name": "K2Horizon.cpp",
+    "repo_url": "https://github.com/MBZUAI-IFM/llama.cpp",
+    "branch": "model/K2Horizon",
+    "local_path": "repos/k2horizon_cpp",
+    "type": "custom",
+    "experimental": false,
+    "default_cmake_flags": []
+  },
+  {
+    "id": "beellama_cpp",
+    "name": "beellama.cpp",
+    "repo_url": "https://github.com/Anbeeld/beellama.cpp",
+    "branch": "main",
+    "local_path": "repos/beellama_cpp",
+    "type": "custom",
+    "experimental": false,
     "default_cmake_flags": []
   }
 ]

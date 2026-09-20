@@ -1332,7 +1332,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         is_edit = source is not None
         dialog = ctk.CTkToplevel(self)
         dialog.title("Edit Build Source" if is_edit else "Add Build Source")
-        dialog.geometry("560x430")
+        dialog.geometry("560x500")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -1506,17 +1506,74 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         build_type_combo.set(profile.get("build_type", "CPU") if is_edit else "CPU")
         build_type_combo.pack(pady=2, padx=20, fill="x")
 
-        ctk.CTkLabel(dialog, text="CMake Flags (comma-separated):").pack(pady=(5, 0), padx=20, anchor="w")
-        flags_entry = self._style_field(ctk.CTkEntry(dialog, placeholder_text="-DGGML_CUDA=ON", height=34))
+        def resize():
+            dialog.update_idletasks()
+            dialog.geometry(f"560x{max(320, dialog.winfo_reqheight() + 24)}")
+
         if is_edit:
-            flags_entry.insert(0, ", ".join(profile.get("cmake_flags", [])))
-        flags_entry.pack(pady=2, padx=20, fill="x")
+            ctk.CTkLabel(dialog, text="CMake Flags (one per line):").pack(
+                pady=(5, 0), padx=20, anchor="w")
+            existing_flags = profile.get("cmake_flags") or []
+            flags_text = self._style_textbox(
+                ctk.CTkTextbox(dialog, height=200, wrap="word",
+                                font=ctk.CTkFont(size=13, family="Consolas")))
+            for flag in existing_flags:
+                flags_text.insert("end", flag + "\n")
+            flags_text.pack(pady=2, padx=20, fill="x")
+        else:
+            ctk.CTkLabel(dialog, text="CMake Flags (one flag per row):").pack(
+                pady=(5, 0), padx=20, anchor="w")
+            flags_container = ctk.CTkFrame(dialog, fg_color="transparent")
+            flags_container.pack(fill="x", padx=20, pady=(2, 8))
+            flag_rows = []  # (row frame, entry)
+
+            def remove_flag_row(row_to_remove):
+                """Remove the flag row that contains the - button."""
+                flag_rows[:] = [item for item in flag_rows if item[0] is not row_to_remove]
+                row_to_remove.destroy()
+                for row, _ in flag_rows:
+                    row.pack_forget()
+                for row, _ in flag_rows:
+                    row.pack(fill="x")
+                resize()
+
+            def create_flag_row(removable=False):
+                new_row = ctk.CTkFrame(flags_container, fg_color="transparent")
+                e = self._style_field(
+                    ctk.CTkEntry(new_row, placeholder_text="-DGGML_CUDA=ON", height=34))
+                if not removable:
+                    add_btn = ctk.CTkButton(new_row, text="+", width=28, height=34,
+                                            fg_color=SURFACE, hover_color="#172235",
+                                            border_width=1, border_color=BLUE,
+                                            command=lambda: create_flag_row(removable=True))
+                if removable:
+                    del_btn = ctk.CTkButton(new_row, text="-", width=28, height=34,
+                                            fg_color=SURFACE, hover_color="#172235",
+                                            border_width=1, border_color=BLUE,
+                                            command=lambda r=new_row: remove_flag_row(r))
+                e.pack(side="left", fill="x", expand=True, padx=(0, 6))
+                if not removable:
+                    add_btn.pack(side="left", padx=(4, 0))
+                if removable:
+                    del_btn.pack(side="left", padx=(0, 0))
+                flag_rows.append((new_row, e))
+                for row, _ in flag_rows:
+                    row.pack_forget()
+                for row, _ in flag_rows:
+                    row.pack(fill="x")
+                resize()
+
+            create_flag_row()
 
         def save():
             name = name_entry.get().strip()
             build_type = build_type_combo.get()
-            flags_str = flags_entry.get().strip()
-            flags = [f.strip() for f in flags_str.split(",") if f.strip()] if flags_str else []
+            if is_edit:
+                flags = [f.strip()
+                         for f in flags_text.get("1.0", "end-1c").splitlines()
+                         if f.strip()]
+            else:
+                flags = [e.get().strip() for _, e in flag_rows if e.get().strip()]
 
             if not name:
                 messagebox.showerror("Error", "Name is required.")
@@ -1541,6 +1598,8 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         ctk.CTkButton(dialog, text="Save" if is_edit else "Add", command=save,
                       fg_color=BLUE, hover_color=BLUE_HOVER,
                       corner_radius=8, height=36).pack(pady=18)
+
+        resize()
 
     def delete_selected_profile(self):
         """Delete the selected profile."""
