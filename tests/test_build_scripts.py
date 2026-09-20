@@ -1,11 +1,13 @@
 """Exercise PowerShell helpers without installing tools or compiling llama.cpp."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 
 import pytest
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows helper checks require Windows path semantics")
 def test_windows_build_helpers(tmp_path):
     powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
     if not powershell:

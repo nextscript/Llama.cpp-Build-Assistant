@@ -35,7 +35,8 @@ def test_native_flags_transport_and_precedence(monkeypatch, system, backend, tar
     process = Mock(returncode=1, stdout=io.StringIO(""))
     popen = Mock(return_value=process)
     monkeypatch.setattr(builder.subprocess, "Popen", popen)
-    builder.run_build("main", backend, cpu_target=target, custom_flags=[override], build_output_dir="C:/b")
+    builder.run_build("main", backend, cpu_target=target, custom_flags=[override],
+                      build_output_dir=os.path.abspath(os.sep + "b"))
     command = popen.call_args.args[0]
     if system == "Windows":
         flags = [base64.b64decode(f).decode() for f in command[command.index("-ExtraFlagsBase64") + 1].split(",")]
