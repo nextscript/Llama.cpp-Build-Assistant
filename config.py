@@ -44,6 +44,7 @@ BUILD_SOURCES_FILE = SOURCES_FILE
 BUILD_HISTORY_FILE = os.path.join(DATA_DIR, "build_history.json")
 SYSTEM_REPORT_FILE = os.path.join(DATA_DIR, "system_report.json")
 PROFILES_FILE = os.path.join(DATA_DIR, "profiles.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 # Log files
 BUILD_LOG_FILE = os.path.join(LOGS_DIR, "build.log")

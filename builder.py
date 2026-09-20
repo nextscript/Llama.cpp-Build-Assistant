@@ -25,27 +25,29 @@ CORE_TARGETS = ["llama-server", "llama-cli", "llama-bench", "llama-quantize"]
 CPU_TARGETS = ("portable", "native")
 
 
-def get_build_path(source_id, build_type):
+def get_build_path(source_id, build_type, build_output_dir=None):
     """Legacy flat output path (kept as fallback for history entries)."""
     source_name = source_id.replace("_", "-")
-    return os.path.join(BUILDS_DIR, f"{source_name}-{build_type.lower()}")
+    output_dir = build_output_dir or BUILDS_DIR
+    return os.path.join(output_dir, f"{source_name}-{build_type.lower()}")
 
 
-def find_source_checkout(source_id, build_type=None):
-    """Find the newest versioned checkout for a source (and backend) in BUILDS_DIR."""
+def find_source_checkout(source_id, build_type=None, build_output_dir=None):
+    """Find the newest versioned checkout in the selected build directory."""
     source = get_source_by_id(source_id) or {}
     suffix = get_dir_suffix(source)
-    if not suffix or not os.path.isdir(BUILDS_DIR):
+    output_dir = build_output_dir or BUILDS_DIR
+    if not suffix or not os.path.isdir(output_dir):
         return None
     backend = re.escape(build_type.lower()) if build_type else "[a-z]+"
     pattern = re.compile(
         rf"^(?:b\d+|bUNKNOWN|pr\d+|pinned_[0-9a-f]+)"
         rf"(?:_run_[0-9_]+)?_{backend}_{re.escape(suffix)}$")
     candidates = []
-    for name in os.listdir(BUILDS_DIR):
+    for name in os.listdir(output_dir):
         if not pattern.fullmatch(name):
             continue
-        path = os.path.join(BUILDS_DIR, name)
+        path = os.path.join(output_dir, name)
         if os.path.isdir(path):
             candidates.append(path)
     if not candidates:
@@ -133,7 +135,7 @@ def verify_build(binaries, build_type, callback=None):
 def run_build(source_id, build_type, update_repo_flag=False,
               custom_flags=None, clean_build=False, callback=None,
               build_ui=False, cpu_target="portable", jobs=None,
-              core_only=False, cuda_major=""):
+              core_only=False, cuda_major="", build_output_dir=None):
     """
     Run the full build process using the platform build script.
     Windows uses build_llamacpp.ps1 (PowerShell); macOS/Linux use
@@ -145,6 +147,7 @@ def run_build(source_id, build_type, update_repo_flag=False,
     jobs:       parallel compile jobs (None = CPU count).
     core_only:  build only CORE_TARGETS instead of every example/tool.
     cuda_major: "12" / "13" to pin the CUDA toolkit generation, "" = newest.
+    build_output_dir: output root for this invocation (defaults to BUILDS_DIR).
 
     The complete checkout is kept under builds/<bNNNN>_<backend>_<suffix>/:
     Git metadata, sources, Web UI assets, CMake projects, libraries and binaries.
@@ -165,6 +168,9 @@ def run_build(source_id, build_type, update_repo_flag=False,
         if callback:
             callback(msg)
         return False, [msg], msg, [], ""
+
+    output_dir = os.path.realpath(os.path.abspath(os.path.expanduser(
+        build_output_dir or BUILDS_DIR)))
 
     system = platform.system()
     if cpu_target not in CPU_TARGETS:
@@ -191,7 +197,7 @@ def run_build(source_id, build_type, update_repo_flag=False,
     dir_suffix = get_dir_suffix(source)
 
     # Final output folder for the finished binaries (legacy fallback).
-    build_path = get_build_path(source_id, build_type)
+    build_path = get_build_path(source_id, build_type, output_dir)
 
     if system == "Windows":
         script_path = os.path.join(BUNDLE_DIR, "build_llamacpp.ps1")
@@ -204,7 +210,7 @@ def run_build(source_id, build_type, update_repo_flag=False,
         # quoting headaches around -ExtraFlags / build paths.
         cmd = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path,
                "-Source", source_id, "-BuildType", build_type,
-               "-InstallDir", BUILDS_DIR,
+               "-InstallDir", output_dir,
                "-DepsDir", os.path.join(EXE_DIR, "deps"),
                "-DirSuffix", dir_suffix,
                "-CpuTarget", cpu_target,
@@ -244,7 +250,7 @@ def run_build(source_id, build_type, update_repo_flag=False,
             if callback:
                 callback(msg)
             return False, [msg], msg, [], ""
-        cmd = ["bash", script_path, "-s", source_id, "-t", build_type, "-d", BUILDS_DIR,
+        cmd = ["bash", script_path, "-s", source_id, "-t", build_type, "-d", output_dir,
                "-o", dir_suffix, "-C", cpu_target, "-j", str(jobs)]
         if source.get("repo_url"):
             cmd += ["-r", source.get("repo_url")]
@@ -279,6 +285,7 @@ def run_build(source_id, build_type, update_repo_flag=False,
         callback(f"  CPU target: {cpu_target}  Jobs: {jobs}"
                  + (f"  Targets: {targets_str}" if targets_str else "")
                  + (f"  CUDA: {cuda_major}.x" if cuda_major else ""))
+        callback(f"  Build output: {output_dir}")
         callback(f"  Script: {script_path}")
         if profile_flags:
             callback("  Profile CMake flags:")
@@ -328,7 +335,7 @@ def run_build(source_id, build_type, update_repo_flag=False,
         cmake_dir = os.path.realpath(cmake_dir)
         checkout_dir = os.path.dirname(cmake_dir)
         if (os.path.normcase(os.path.dirname(checkout_dir)) !=
-                os.path.normcase(os.path.realpath(BUILDS_DIR)) or
+                os.path.normcase(output_dir) or
                 os.path.basename(cmake_dir).lower() != "build"):
             msg = f"Unexpected build output directory: {cmake_dir}"
             if callback:
@@ -400,8 +407,33 @@ def find_binaries(build_path):
     return binaries
 
 
+def get_checkout_version(build_path):
+    """Return Git metadata for the exact checkout used by a build."""
+    if not build_path or not os.path.isdir(os.path.join(build_path, ".git")):
+        return {}
+
+    def git_value(*args):
+        try:
+            result = subprocess.run(
+                ["git", "-C", build_path, *args], capture_output=True,
+                text=True, timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                encoding="utf-8", errors="replace")
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    commit = git_value("rev-parse", "HEAD")
+    count = git_value("rev-list", "--count", "HEAD")
+    return {
+        "commit": commit,
+        "build_number": f"b{count}" if count.isdigit() else "",
+    }
+
+
 def save_build_result(source_id, build_type, success, build_path,
-                      binaries=None, duration=None, error_message=None):
+                      binaries=None, duration=None, error_message=None,
+                      version_info=None):
     """Save build result to build_history.json."""
     source = get_source_by_id(source_id) if source_id else None
 
@@ -415,6 +447,10 @@ def save_build_result(source_id, build_type, success, build_path,
         "duration_seconds": duration or 0,
         "error_message": error_message or ""
     }
+
+    version_info = version_info or {}
+    entry["build_number"] = version_info.get("build_number", "")
+    entry["commit"] = version_info.get("commit", "")
 
     if binaries:
         entry["binaries"] = binaries

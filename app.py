@@ -3,7 +3,7 @@ Llama.cpp Build Assistant — Main GUI Application
 Uses CustomTkinter for a modern dark-themed interface..
 """
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 import platform
 import threading
 import os
@@ -19,10 +19,14 @@ except Exception:
     Image = None
 
 from config import (
-    ROOT_DIR, BUNDLE_DIR, BUILD_SOURCES_FILE, BUILD_HISTORY_FILE,
+    ROOT_DIR, BUNDLE_DIR, BUILDS_DIR, BUILD_SOURCES_FILE, BUILD_HISTORY_FILE,
     SYSTEM_REPORT_FILE, PROFILES_FILE,
     DEFAULT_BUILD_SOURCES, DEFAULT_BUILD_PROFILES,
     BUILD_TYPES, BUILD_TYPE_DISPLAY, BUILD_TYPE_FLAGS
+)
+from app_settings import (
+    BUILD_OUTPUT_DIRECTORY_KEY, load_settings, save_setting,
+    validate_build_output_directory
 )
 from hardware_check import (run_full_check, get_recommendation, get_recommendation_reason,
                             select_profile_name, recommend_cuda_major)
@@ -38,7 +42,11 @@ from source_manager import (
 )
 from builder import (
     run_build, save_build_result, get_build_history,
-    get_error_explanation, get_build_path, extract_error_lines, CPU_TARGETS
+    get_error_explanation, get_build_path, get_checkout_version,
+    extract_error_lines, CPU_TARGETS
+)
+from source_version import (
+    check_source_version, update_source_checkout
 )
 from profile_manager import load_profiles, add_profile, edit_profile, delete_profile, get_profile_by_name
 from logger import log_build, log_error, log_warning, log_install
@@ -84,6 +92,11 @@ class BuildAssistantApp(ctk.CTk):
         self.selected_source = ctk.StringVar(value="main")
         self.selected_profile = ctk.StringVar(value="")
         self.selected_build_type = ctk.StringVar(value="CPU")
+        saved_settings = load_settings()
+        saved_build_output = saved_settings.get(BUILD_OUTPUT_DIRECTORY_KEY, BUILDS_DIR)
+        if not isinstance(saved_build_output, str) or not saved_build_output.strip():
+            saved_build_output = BUILDS_DIR
+        self.build_output_dir_var = ctk.StringVar(value=saved_build_output)
         self.build_sources = load_sources()
         self.build_profiles = load_profiles()
         self.is_building = False
@@ -93,6 +106,9 @@ class BuildAssistantApp(ctk.CTk):
         self._ui_queue = queue.Queue()
         self._profile_manually_selected = False
         self._dependency_check_running = False
+        self._source_version_generation = 0
+        self._source_version_result = None
+        self._source_update_running = False
         self._resize_stable_size = None
         self._resize_frozen = False
         self._resize_thaw_job = None
@@ -399,6 +415,8 @@ class BuildAssistantApp(ctk.CTk):
                 button.configure(fg_color=BLUE, hover_color=BLUE_HOVER, text_color="white")
             else:
                 button.configure(fg_color="transparent", hover_color="#182438", text_color=TEXT)
+        if name == "Build" and hasattr(self, "version_status_values"):
+            self.check_selected_source_version()
 
     # ─── Dashboard Tab ───────────────────────────────────────────────
 
@@ -545,6 +563,56 @@ class BuildAssistantApp(ctk.CTk):
         self.source_combo.pack(padx=20, pady=(5, 15), fill="x")
         self._update_source_combo()
 
+        version_frame = self._card(scroll_frame)
+        version_frame.pack(fill="x", padx=25, pady=8)
+        ctk.CTkLabel(version_frame, text="Build Version Status",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=20, pady=(15, 8), anchor="w")
+        version_grid = ctk.CTkFrame(version_frame, fg_color="transparent")
+        version_grid.pack(fill="x", padx=20, pady=(0, 8))
+        version_grid.grid_columnconfigure(1, weight=1)
+        self.version_status_values = {}
+        version_fields = (
+            ("local_build", "Local Build:"),
+            ("remote_build", "Latest Available:"),
+            ("status", "Status:"),
+            ("local_commit", "Local Commit:"),
+            ("remote_commit", "Remote Commit:"),
+            ("branch", "Branch:"),
+            ("source_type", "Source Type:"),
+            ("last_update", "Last Update:"),
+        )
+        for row_index, (key, label_text) in enumerate(version_fields):
+            ctk.CTkLabel(version_grid, text=label_text, width=130, anchor="w",
+                         font=ctk.CTkFont(size=12), text_color=MUTED).grid(
+                row=row_index, column=0, sticky="w", pady=2)
+            value_label = ctk.CTkLabel(
+                version_grid, text="—", anchor="w", justify="left",
+                font=ctk.CTkFont(size=12))
+            value_label.grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=2)
+            self.version_status_values[key] = value_label
+        self.version_status_message = ctk.CTkLabel(
+            version_frame, text="", anchor="w", justify="left",
+            wraplength=760, font=ctk.CTkFont(size=11), text_color=MUTED)
+        self.version_status_message.pack(fill="x", padx=20, pady=(0, 8))
+        version_buttons = ctk.CTkFrame(version_frame, fg_color="transparent")
+        version_buttons.pack(fill="x", padx=20, pady=(0, 15))
+        self.check_source_version_btn = ctk.CTkButton(
+            version_buttons, text="Check for Updates", width=145, height=34,
+            command=self.check_selected_source_version,
+            fg_color=SURFACE_ALT, hover_color="#172235")
+        self.check_source_version_btn.pack(side="left")
+        self.update_source_btn = ctk.CTkButton(
+            version_buttons, text="Update Source", width=125, height=34,
+            command=self.update_selected_source, state="disabled",
+            fg_color=BLUE, hover_color=BLUE_HOVER)
+        self.update_source_btn.pack(side="left", padx=(8, 0))
+        self.view_source_changes_btn = ctk.CTkButton(
+            version_buttons, text="View Changes", width=125, height=34,
+            command=self.view_source_changes, state="disabled",
+            fg_color=SURFACE_ALT, hover_color="#172235")
+        self.view_source_changes_btn.pack(side="left", padx=(8, 0))
+
         profile_frame = self._card(scroll_frame)
         profile_frame.pack(fill="x", padx=25, pady=8)
         ctk.CTkLabel(profile_frame, text="Build Profile:",
@@ -557,6 +625,31 @@ class BuildAssistantApp(ctk.CTk):
                                                                corner_radius=8, height=36))
         self.profile_combo.pack(padx=20, pady=(5, 15), fill="x")
         self._update_profile_combo()
+
+        output_frame = self._card(scroll_frame)
+        output_frame.pack(fill="x", padx=25, pady=8)
+        ctk.CTkLabel(output_frame, text="Build Output Directory:",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=20, pady=(15, 8), anchor="w")
+        output_row = ctk.CTkFrame(output_frame, fg_color="transparent")
+        output_row.pack(fill="x", padx=20, pady=(5, 8))
+        self.build_output_entry = self._style_field(ctk.CTkEntry(
+            output_row, textvariable=self.build_output_dir_var, height=36))
+        self.build_output_entry.pack(side="left", fill="x", expand=True)
+        self.build_output_entry.bind("<FocusOut>", self._save_build_output_directory)
+        self.build_output_entry.bind("<Return>", self._save_build_output_directory)
+        ctk.CTkButton(output_row, text="Browse...", width=92, height=36,
+                      command=self.browse_build_output_directory,
+                      fg_color=SURFACE_ALT, hover_color="#172235").pack(
+            side="left", padx=(8, 0))
+        ctk.CTkButton(output_row, text="Reset to Default", width=125, height=36,
+                      command=self.reset_build_output_directory,
+                      fg_color=SURFACE_ALT, hover_color="#172235").pack(
+            side="left", padx=(8, 0))
+        ctk.CTkLabel(output_frame, text=f"Default: {BUILDS_DIR}",
+                     font=ctk.CTkFont(size=11), text_color=MUTED,
+                     justify="left", wraplength=760).pack(
+            padx=20, pady=(0, 15), anchor="w")
 
         opt_frame = self._card(scroll_frame)
         opt_frame.pack(fill="x", padx=25, pady=8)
@@ -1098,6 +1191,174 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
 
     # ─── Build ───────────────────────────────────────────────────────
 
+    def _selected_build_source(self):
+        source_name = self.selected_source.get()
+        source_id = self._source_name_to_id.get(source_name, source_name)
+        return get_source_by_id(source_id)
+
+    def check_selected_source_version(self):
+        """Check the selected source in a worker thread without blocking the UI."""
+        if self._source_update_running:
+            return
+        source = self._selected_build_source()
+        if not source:
+            return
+
+        self._source_version_generation += 1
+        generation = self._source_version_generation
+        self._source_version_result = None
+        for label in self.version_status_values.values():
+            label.configure(text="—", text_color=TEXT)
+        self.version_status_values["status"].configure(text="Checking...", text_color=MUTED)
+        self.version_status_message.configure(text="")
+        self.check_source_version_btn.configure(state="disabled", text="Checking...")
+        self.update_source_btn.configure(state="disabled")
+        self.view_source_changes_btn.configure(state="disabled")
+
+        build_output_dir = os.path.abspath(os.path.expanduser(
+            self.build_output_dir_var.get().strip() or BUILDS_DIR))
+        profile = get_profile_by_name(self.selected_profile.get())
+        build_type = (profile or {}).get("build_type", self.selected_build_type.get())
+
+        def worker():
+            try:
+                result = check_source_version(source, build_output_dir, build_type)
+            except Exception as exc:
+                result = {
+                    "source_id": source.get("id", ""),
+                    "status": "unable", "status_text": "Unable to check",
+                    "message": str(exc), "update_allowed": False, "changes": []
+                }
+            self._post_ui(lambda: self._apply_source_version_result(generation, result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_source_version_result(self, generation, result):
+        if generation != self._source_version_generation:
+            return
+        self._source_version_result = result
+        kind = result.get("kind", "custom")
+        kind_labels = {
+            "official": "Normal branch",
+            "fork": "Fork",
+            "custom": "Custom source",
+            "pinned": "Pinned commit",
+            "pr": f"PR #{result.get('pr', '')}",
+        }
+        source_type = kind_labels.get(kind, kind.title())
+        if result.get("pinned") and kind == "pr":
+            source_type += " (pinned)"
+        if result.get("pr_state"):
+            source_type += f" — {result['pr_state']}"
+
+        def short_commit(value):
+            return value[:9] if value else "Not available"
+
+        values = {
+            "local_build": result.get("local_build") or "Not available",
+            "remote_build": result.get("remote_build") or "Not available",
+            "status": result.get("status_text") or "Unable to check",
+            "local_commit": short_commit(result.get("local_commit")),
+            "remote_commit": short_commit(result.get("remote_commit")),
+            "branch": result.get("branch") or "Not available",
+            "source_type": source_type,
+            "last_update": result.get("last_update") or "Not available",
+        }
+        status_colors = {
+            "up_to_date": GREEN,
+            "update_available": "#fbbf24",
+            "pinned": "#60a5fa",
+            "unable": DANGER,
+            "not_built": MUTED,
+        }
+        for key, value in values.items():
+            color = status_colors.get(result.get("status"), TEXT) if key == "status" else TEXT
+            self.version_status_values[key].configure(text=value, text_color=color)
+
+        details = []
+        if result.get("pinned"):
+            details.append("This source is pinned and will never be moved automatically.")
+        if result.get("behind"):
+            target = "PR commits" if kind == "pr" else "newer commits"
+            details.append(f"{result['behind']} {target} available.")
+        if result.get("ahead"):
+            details.append(f"The local checkout is {result['ahead']} commits ahead of the remote target.")
+        if result.get("message"):
+            details.append(result["message"])
+        self.version_status_message.configure(text=" ".join(details))
+
+        can_update = (
+            result.get("update_allowed") and result.get("local_path") and
+            result.get("status") == "update_available")
+        self.update_source_btn.configure(state="normal" if can_update else "disabled")
+        self.view_source_changes_btn.configure(
+            state="normal" if result.get("changes") else "disabled")
+        self.check_source_version_btn.configure(state="normal", text="Check for Updates")
+
+    def update_selected_source(self):
+        """Update the selected unpinned checkout after explicit confirmation."""
+        result = self._source_version_result or {}
+        source = self._selected_build_source()
+        if (not source or not result.get("update_allowed") or
+                not result.get("local_path") or source.get("commit")):
+            messagebox.showinfo(
+                "Update Source", "This source cannot be updated automatically.")
+            return
+        if self.is_building:
+            messagebox.showinfo(
+                "Update Source", "Wait for the current build to finish before updating the source.")
+            return
+        if not messagebox.askyesno(
+                "Update Source",
+                "Update the local source checkout to the latest remote commit?\n\n"
+                "Local source changes will be discarded. Existing build output is retained."):
+            return
+
+        self._source_update_running = True
+        self._source_version_generation += 1
+        self.check_source_version_btn.configure(state="disabled")
+        self.update_source_btn.configure(state="disabled", text="Updating...")
+        checkout = result["local_path"]
+
+        def worker():
+            try:
+                updated_path = update_source_checkout(source, checkout)
+                self._post_ui(lambda: self._source_update_finished(updated_path, ""))
+            except Exception as exc:
+                error = str(exc)
+                self._post_ui(lambda: self._source_update_finished("", error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _source_update_finished(self, updated_path, error):
+        self._source_update_running = False
+        self.update_source_btn.configure(text="Update Source", state="disabled")
+        self.check_source_version_btn.configure(state="normal")
+        if error:
+            messagebox.showerror("Source Update Failed", error)
+        else:
+            messagebox.showinfo("Source Updated", f"Source updated successfully.\n\n{updated_path}")
+        self.check_selected_source_version()
+
+    def view_source_changes(self):
+        """Show commits available between the local and remote source versions."""
+        changes = (self._source_version_result or {}).get("changes", [])
+        if not changes:
+            messagebox.showinfo("Source Changes", "No new commits are available to display.")
+            return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Available Source Changes")
+        dialog.geometry("760x520")
+        dialog.transient(self)
+        ctk.CTkLabel(dialog, text="Commits available upstream",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(
+            padx=20, pady=(18, 10), anchor="w")
+        changes_text = self._style_textbox(ctk.CTkTextbox(
+            dialog, font=ctk.CTkFont(size=12, family="Consolas")))
+        changes_text.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        changes_text.insert("1.0", "\n".join(changes))
+        changes_text.configure(state="disabled")
+
     def on_source_changed(self, source_name):
         source_id = self._source_name_to_id.get(source_name, source_name)
         source = get_source_by_id(source_id)
@@ -1105,6 +1366,8 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             return
 
         self.lbl_current_source.configure(text=source.get("name", source_id))
+        if hasattr(self, "version_status_values"):
+            self.check_selected_source_version()
 
     def on_profile_changed(self, profile_name):
         profile = get_profile_by_name(profile_name)
@@ -1115,6 +1378,8 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 self.clean_build_var.set(bool(profile.get("clean_build")))
             if hasattr(self, "update_repo_var") and "update_repo" in profile:
                 self.update_repo_var.set(bool(profile.get("update_repo")))
+            if hasattr(self, "version_status_values"):
+                self.check_selected_source_version()
 
     def _on_manual_profile_changed(self, profile_name):
         self._profile_manually_selected = True
@@ -1122,6 +1387,43 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
 
     def _queue_build_log(self, line):
         self._build_log_queue.put(line)
+
+    def _save_build_output_directory(self, event=None):
+        """Persist the currently selected build output directory."""
+        selected = self.build_output_dir_var.get().strip()
+        if not selected:
+            return
+        selected = os.path.abspath(os.path.expanduser(selected))
+        self.build_output_dir_var.set(selected)
+        try:
+            save_setting(BUILD_OUTPUT_DIRECTORY_KEY, selected)
+        except OSError as exc:
+            messagebox.showerror(
+                "Settings Error",
+                f"The build output directory setting could not be saved.\n\n{exc}"
+            )
+        if event is not None and hasattr(self, "version_status_values"):
+            self.check_selected_source_version()
+
+    def browse_build_output_directory(self):
+        """Select and persist a custom build output directory."""
+        current = self.build_output_dir_var.get().strip()
+        initial_directory = current if os.path.isdir(current) else BUILDS_DIR
+        selected = filedialog.askdirectory(
+            title="Select Build Output Directory",
+            initialdir=initial_directory,
+            mustexist=False
+        )
+        if selected:
+            self.build_output_dir_var.set(os.path.abspath(selected))
+            self._save_build_output_directory()
+            self.check_selected_source_version()
+
+    def reset_build_output_directory(self):
+        """Restore and persist the application's default builds directory."""
+        self.build_output_dir_var.set(BUILDS_DIR)
+        self._save_build_output_directory()
+        self.check_selected_source_version()
 
     def _flush_build_log(self):
         lines = []
@@ -1160,6 +1462,15 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         bt = profile.get("build_type", "CPU")
         self.selected_build_type.set(bt)
 
+        try:
+            build_output_dir, _free_bytes = validate_build_output_directory(
+                self.build_output_dir_var.get())
+            save_setting(BUILD_OUTPUT_DIRECTORY_KEY, build_output_dir)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Invalid Build Output Directory", str(exc))
+            return
+        self.build_output_dir_var.set(build_output_dir)
+
         # Clear log
         self.build_log_text.delete("1.0", "end")
 
@@ -1196,16 +1507,18 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                     cpu_target=cpu_target,
                     jobs=jobs,
                     core_only=core_only,
-                    cuda_major=cuda_major
+                    cuda_major=cuda_major,
+                    build_output_dir=build_output_dir
                 )
 
                 duration = time.time() - start_time
 
                 # Save result
                 if not build_path:
-                    build_path = get_build_path(source_id, bt)
+                    build_path = get_build_path(source_id, bt, build_output_dir)
+                version_info = get_checkout_version(build_path)
                 save_build_result(source_id, bt, success, build_path,
-                                  binaries, duration, error_msg)
+                                  binaries, duration, error_msg, version_info)
 
                 if success:
                     self._queue_build_log("")
@@ -1246,6 +1559,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
 
             self.is_building = False
             self._post_ui(lambda: self.build_btn.configure(state="normal", text="Start Build"))
+            self._post_ui(self.check_selected_source_version)
 
         threading.Thread(target=do_build, daemon=True).start()
 
@@ -1267,6 +1581,12 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 lines.append(f"Date: {entry.get('date', 'N/A')}")
                 lines.append(f"  Source: {entry.get('source_name', 'N/A')}")
                 lines.append(f"  Type: {entry.get('build_type', 'N/A')}")
+                if entry.get("build_number"):
+                    lines.append(f"  Build: {entry['build_number']}")
+                if entry.get("commit"):
+                    lines.append(f"  Commit: {entry['commit']}")
+                if entry.get("branch"):
+                    lines.append(f"  Branch: {entry['branch']}")
                 lines.append(f"  Success: {entry.get('success', False)}")
                 lines.append(f"  Path: {entry.get('build_path', 'N/A')}")
                 if entry.get('duration_seconds'):

@@ -13,6 +13,8 @@ macOS, Ubuntu and other Linux distros**.
 - **Dependency Checker / Auto-Install** — `winget` (Windows), `apt`/`dnf`/`pacman`/`zypper` (Linux), Homebrew (macOS)
 - **Multiple Sources** — official + experimental `llama.cpp` forks (see below)
 - **Build Profiles** — pre-configured profiles for quick setup
+- **Custom Build Output** — choose and persist a build directory, with write-access and free-space checks
+- **Build Version Status** — compare local and remote Git revisions, inspect new commits, and explicitly update unpinned sources
 - **Live Logs** — real-time build output
 - **Build History** — all build results saved for reference
 - 

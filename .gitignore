@@ -19,6 +19,7 @@ logs/
 # Generated runtime data (profiles are seeded from config.py defaults)
 data/build_history.json
 data/system_report.json
+data/settings.json
 
 # Profile migration marker (written once per data dir)
 data/.profiles-migrated-*

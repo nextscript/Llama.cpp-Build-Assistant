@@ -1,6 +1,7 @@
 """Regression tests for output selection and the executable verification gate."""
 import base64
 import io
+import json
 import os
 from unittest.mock import Mock
 
@@ -127,3 +128,53 @@ def test_windows_profile_flags_are_transferred_losslessly(tmp_path, monkeypatch)
     value = command[command.index("-ExtraFlagsBase64") + 1]
     decoded = [base64.b64decode(item).decode("utf-8") for item in value.split(",")]
     assert decoded == flags
+
+
+def test_build_output_directory_is_passed_per_invocation(tmp_path, monkeypatch):
+    default_dir = tmp_path / "default-builds"
+    custom_dir = tmp_path / "custom-builds"
+    custom_dir.mkdir()
+    monkeypatch.setattr(builder, "BUILDS_DIR", str(default_dir))
+    monkeypatch.setattr(builder, "get_source_by_id", lambda _: {"id": "main"})
+    monkeypatch.setattr("sys.stdout", None)
+    checkout = custom_dir / "b10000_cpu_llama.cpp"
+    binary = checkout / "build" / "bin" / "llama-server.exe"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    process = Mock(returncode=0, stdout=io.StringIO(
+        f"LLAMA_BUILD_OUTPUT={checkout / 'build'}\n"))
+    monkeypatch.setattr(builder.subprocess, "Popen", Mock(return_value=process))
+    monkeypatch.setattr(builder, "_run_binary", Mock(side_effect=[
+        (0, "version: test"), (0, "Available devices:\n")]))
+
+    result = builder.run_build(
+        "main", "CPU", build_output_dir=str(custom_dir))
+
+    assert result[0]
+    assert result[4] == str(checkout)
+    command = builder.subprocess.Popen.call_args.args[0]
+    directory_flag = "-InstallDir" if "-InstallDir" in command else "-d"
+    assert command[command.index(directory_flag) + 1] == str(custom_dir)
+    assert builder.BUILDS_DIR == str(default_dir)
+
+
+def test_build_history_records_exact_source_version(tmp_path, monkeypatch):
+    history_path = tmp_path / "build_history.json"
+    monkeypatch.setattr(builder, "BUILD_HISTORY_FILE", str(history_path))
+    monkeypatch.setattr(builder, "get_source_by_id", lambda _: {
+        "name": "llama.cpp mainline", "repo_url": "https://example.invalid/repo",
+        "branch": "master",
+    })
+    version_info = {
+        "build_number": "b10871",
+        "commit": "5f5fea56d5a39f603e5d2f57e7701b206861564d",
+    }
+
+    builder.save_build_result(
+        "main", "CPU", True, "builds/b10871_cpu_llama.cpp",
+        version_info=version_info)
+
+    entry = json.loads(history_path.read_text(encoding="utf-8"))[0]
+    assert entry["build_number"] == "b10871"
+    assert entry["commit"] == version_info["commit"]
+    assert entry["branch"] == "master"
