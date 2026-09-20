@@ -19,6 +19,20 @@ def test_setting_round_trip_preserves_other_values(tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ({"x": 120, "y": 80}, (120, 80)),
+        ({"x": -1920, "y": 0}, (-1920, 0)),
+        (None, None),
+        ({"x": "120", "y": 80}, None),
+        ({"x": True, "y": 80}, None),
+    ],
+)
+def test_normalize_window_position(value, expected):
+    assert app_settings.normalize_window_position(value) == expected
+
+
 def test_validate_build_output_directory_creates_and_tests_directory(tmp_path):
     selected = tmp_path / "new" / "builds"
 

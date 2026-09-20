@@ -9,6 +9,19 @@ from config import SETTINGS_FILE
 
 MIN_BUILD_FREE_BYTES = 10 * 1024 ** 3
 BUILD_OUTPUT_DIRECTORY_KEY = "build_output_directory"
+WINDOW_POSITION_KEY = "window_position"
+
+
+def normalize_window_position(value):
+    """Return a saved window position as an ``(x, y)`` tuple, if valid."""
+    if not isinstance(value, dict):
+        return None
+    x = value.get("x")
+    y = value.get("y")
+    if (not isinstance(x, int) or isinstance(x, bool)
+            or not isinstance(y, int) or isinstance(y, bool)):
+        return None
+    return x, y
 
 
 def load_settings(path=None):

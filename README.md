@@ -143,6 +143,13 @@ run on any platform.
 
 ## Changelog
 
+### 2.3.7
+
+- Persisted the main window position and restored it on the next launch,
+  including positions on secondary monitors.
+- Centered Add/Edit Build Source and Add/Edit Build Profile dialogs over the
+  main window so they open on the same monitor in multi-monitor setups.
+
 ### 2.3.6
 
 - Added asynchronous remote branch discovery for custom build sources using

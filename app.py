@@ -26,7 +26,8 @@ from config import (
     BUILD_TYPES, BUILD_TYPE_DISPLAY, BUILD_TYPE_FLAGS
 )
 from app_settings import (
-    BUILD_OUTPUT_DIRECTORY_KEY, load_settings, save_setting,
+    BUILD_OUTPUT_DIRECTORY_KEY, WINDOW_POSITION_KEY, load_settings,
+    normalize_window_position, save_setting,
     validate_build_output_directory
 )
 from hardware_check import (run_full_check, get_recommendation, get_recommendation_reason,
@@ -327,11 +328,20 @@ class BuildAssistantApp(ctk.CTk):
         super().__init__()
 
         self.title("Llama.cpp Build Assistant")
-        self.geometry("1600x1024")
+        saved_settings = load_settings()
+        saved_window_position = normalize_window_position(
+            saved_settings.get(WINDOW_POSITION_KEY))
+        geometry = "1600x1024"
+        if saved_window_position is not None:
+            x, y = saved_window_position
+            geometry += f"{x:+d}{y:+d}"
+        self.geometry(geometry)
         self.minsize(1200, 800)
         self.configure(fg_color=BG)
         self._logo_image = None
         self._tk_icon_image = None
+        self._last_normal_window_position = saved_window_position
+        self.protocol("WM_DELETE_WINDOW", self._close_application)
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
@@ -342,7 +352,6 @@ class BuildAssistantApp(ctk.CTk):
         self.selected_source = ctk.StringVar(value="main")
         self.selected_profile = ctk.StringVar(value="")
         self.selected_build_type = ctk.StringVar(value="CPU")
-        saved_settings = load_settings()
         saved_build_output = saved_settings.get(BUILD_OUTPUT_DIRECTORY_KEY, BUILDS_DIR)
         if not isinstance(saved_build_output, str) or not saved_build_output.strip():
             saved_build_output = BUILDS_DIR
@@ -387,6 +396,8 @@ class BuildAssistantApp(ctk.CTk):
             previous_size = getattr(self, "_last_window_size", None)
             self._last_window_position = position
             self._last_window_size = size
+            if self.state() == "normal":
+                self._last_normal_window_position = position
             if previous_position is not None and (position != previous_position or size != previous_size):
                 self._window_motion_until = time.monotonic() + 0.15
             if previous_size is not None and size != previous_size:
@@ -394,6 +405,20 @@ class BuildAssistantApp(ctk.CTk):
             if size == previous_size:
                 return
         super()._update_dimensions_event(event)
+
+    def _save_window_position(self):
+        position = self._last_normal_window_position
+        if position is None and self.state() == "normal":
+            position = (self.winfo_x(), self.winfo_y())
+        if position is not None:
+            save_setting(WINDOW_POSITION_KEY, {"x": position[0], "y": position[1]})
+
+    def _close_application(self):
+        try:
+            self._save_window_position()
+        except OSError as exc:
+            log_warning(f"Could not save window position: {exc}")
+        self.destroy()
 
     def _on_window_resized(self, previous_size):
         # A full Tk relayout of this UI costs several hundred milliseconds.
@@ -449,6 +474,16 @@ class BuildAssistantApp(ctk.CTk):
             border_color=BORDER,
             **kwargs
         )
+
+    def _place_dialog(self, dialog):
+        """Center a child dialog over the main window on the same monitor."""
+        dialog.update_idletasks()
+        parent = self.winfo_toplevel()
+        width = max(dialog.winfo_width(), dialog.winfo_reqwidth())
+        height = max(dialog.winfo_height(), dialog.winfo_reqheight())
+        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+        dialog.geometry(f"{width}x{height}{x:+d}{y:+d}")
 
     def _primary_button(self, parent, text, command=None, **kwargs):
         return ctk.CTkButton(
@@ -2115,6 +2150,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             dialog.destroy()
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._place_dialog(dialog)
         if entries["url"].get().strip():
             schedule_branch_load(immediate=True)
 
@@ -2332,6 +2368,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                       corner_radius=8, height=36).pack(pady=18)
 
         resize()
+        self._place_dialog(dialog)
 
     def delete_selected_profile(self):
         """Delete the selected profile."""
@@ -2688,6 +2725,10 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
     def _restart_app(self, modal):
         import sys
         modal.destroy()
+        try:
+            self._save_window_position()
+        except OSError as exc:
+            log_warning(f"Could not save window position: {exc}")
         self.destroy()
         python = sys.executable
         script = os.path.abspath(sys.argv[0])
