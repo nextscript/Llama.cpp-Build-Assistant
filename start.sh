@@ -20,7 +20,7 @@ for c in python3 python python3.13 python3.12 python3.11; do
 done
 
 if [[ -z "$PYEXE" ]]; then
-    echo "ERROR: No Python found. Install Python 3.9+:"
+    echo "ERROR: No Python found. Install Python 3.10+:"
     echo "  Debian/Ubuntu: sudo apt install python3 python3-pip"
     echo "  Fedora:        sudo dnf install python3 python3-pip"
     echo "  Arch:          sudo pacman -S python python-pip"

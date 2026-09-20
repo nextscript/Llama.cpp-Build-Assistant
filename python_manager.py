@@ -18,7 +18,7 @@ supports Python 3.12 / 3.13 / 3.14.
 Responsibilities
 ----------------
 1. Discover every Python interpreter installed on the system.
-2. Select a suitable base interpreter (3.9+, preferring the newest in the
+2. Select a suitable base interpreter (3.10+, preferring the newest in the
    3.12–3.14 range).
 3. Create (or reuse) a project virtualenv and install requirements.txt into it.
 4. Only if NO usable interpreter exists at all, offer to install one from the
@@ -48,7 +48,8 @@ VENV_DIR = os.path.join(ROOT_DIR, ".venv")
 # Packages that the app actually imports at runtime. We probe these to decide
 # whether a virtualenv is "ready".
 REQUIRED_IMPORTS = {
-    "customtkinter": "customtkinter",
+    "PySide6": "PySide6.QtWidgets",
+    "PySide6-Fluent-Widgets": "qfluentwidgets",
     "psutil": "psutil",
     "py-cpuinfo": "cpuinfo",
     "GPUtil": "GPUtil",
@@ -60,7 +61,7 @@ REQUIRED_IMPORTS = {
 #  - MIN_SUPPORTED: anything below is rejected outright.
 #  - PREFERRED_MAX: we prefer interpreters at or below this. 3.14 is now a
 #    first-class target (all deps are pure-Python or ship 3.14 wheels).
-MIN_SUPPORTED = (3, 9)
+MIN_SUPPORTED = (3, 10)
 PREFERRED_MAX = (3, 14)
 
 # Version installed automatically when nothing usable is found at all.
@@ -143,12 +144,6 @@ def _requirements_importable(exe: str) -> int:
         if _package_ok(exe, import_name):
             ok += 1
     return ok
-
-
-def _tkinter_ok(exe: str) -> bool:
-    """customtkinter requires tkinter; check it is importable."""
-    rc, _, _ = _run([exe, "-c", "import tkinter"], timeout=15)
-    return rc == 0
 
 
 class PyInfo:
@@ -451,34 +446,6 @@ def ensure_venv(base_exe: str, on_log=None) -> Optional[str]:
     return vpy
 
 
-def _warn_tkinter_if_missing(exe: str, on_log=None) -> None:
-    """customtkinter needs tkinter; warn clearly if it is unavailable."""
-    if _tkinter_ok(exe):
-        return
-
-    def log(msg):
-        if on_log:
-            on_log(msg)
-    system = platform.system()
-    log("WARNING: tkinter is not available for this interpreter.")
-    log("The GUI (customtkinter) requires tkinter. Install it:")
-    if system == "Linux":
-        rc, out, _ = _run(["cat", "/etc/os-release"])
-        low = out.lower()
-        if "ubuntu" in low or "debian" in low:
-            log("  sudo apt install python3-tk")
-        elif "fedora" in low:
-            log("  sudo dnf install python3-tkinter")
-        elif "arch" in low:
-            log("  sudo pacman -S tk")
-        else:
-            log("  Install the tk/tkinter package for your distribution.")
-    elif system == "Darwin":
-        log("  brew install python-tk   (or reinstall python.org Python)")
-    else:
-        log("  Reinstall Python from python.org with tcl/tk included.")
-
-
 # ---------------------------------------------------------------------------
 # Selection (base interpreter — the venv is created from it)
 # ---------------------------------------------------------------------------
@@ -703,7 +670,6 @@ def ensure_compatible_python(on_log=None, auto_install: bool = True) -> Optional
     if best:
         vpy = ensure_venv(best.path, on_log=on_log)
         if vpy:
-            _warn_tkinter_if_missing(vpy, on_log=on_log)
             return vpy
         # venv creation failed with the best base -> try the others.
         others = [p for p in found if p.path != best.path and p.usable]
@@ -711,7 +677,6 @@ def ensure_compatible_python(on_log=None, auto_install: bool = True) -> Optional
         for alt in others:
             vpy = ensure_venv(alt.path, on_log=on_log)
             if vpy:
-                _warn_tkinter_if_missing(vpy, on_log=on_log)
                 return vpy
 
     if not auto_install:
@@ -723,7 +688,6 @@ def ensure_compatible_python(on_log=None, auto_install: bool = True) -> Optional
     if new_exe:
         vpy = ensure_venv(new_exe, on_log=on_log)
         if vpy:
-            _warn_tkinter_if_missing(vpy, on_log=on_log)
             return vpy
 
     log("Could not set up a Python environment. Please install Python "

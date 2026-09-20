@@ -1,0 +1,3 @@
+﻿# Optional original GUI, retained only for migration comparison.
+-r requirements.txt
+customtkinter>=1.1.0

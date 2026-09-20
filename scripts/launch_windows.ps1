@@ -6,7 +6,7 @@ try {
     $python = @('py', 'python', 'python3') | ForEach-Object {
         Get-Command $_ -ErrorAction SilentlyContinue
     } | Select-Object -First 1
-    if (-not $python) { throw 'Python 3.9 or newer is required.' }
+    if (-not $python) { throw 'Python 3.10 or newer is required.' }
     $bootstrap = Start-Process -FilePath $python.Source -WindowStyle Hidden -PassThru -Wait `
         -WorkingDirectory $projectDir `
         -ArgumentList ('"' + (Join-Path $projectDir 'python_manager.py') + '" bootstrap') `

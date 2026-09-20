@@ -2,10 +2,27 @@
 
 # Llama.cpp Build Assistant
 
-A Python GUI application that automatically checks system hardware, ensures a
+A Python desktop application built with **PySide6 / Qt 6 + Fluent Widgets** that
+automatically checks system hardware, ensures a
 compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
+
+## What's new in v2.3.9
+
+The GUI now runs on **PySide6 / Qt 6 + Fluent Widgets**, retaining the dark
+palette, 150-pixel sidebar, navigation order, cards and 1600 × 1024 initial
+window size. The existing Python backend and build scripts are reused.
+
+Builds, hardware and dependency checks, Git queries and updates run in Qt
+worker threads. Pages remain loaded when switching views, and native Qt
+layouts replace the previous Tk resize-freeze logic. Window position, size,
+maximized state and the build/log splitter are saved alongside existing settings.
+
+See the [v2.3.9 changelog](#239) and [migration and validation report](docs/qt-migration.md)
+for details. The original `legacy_app.py` is retained for comparison until
+interactive acceptance is complete; it is not loaded by the Qt application
+or included in release executables.
 
 ## Features
 
@@ -15,10 +32,15 @@ macOS, Ubuntu and other Linux distros**.
 - **Build Profiles** — pre-configured profiles for quick setup
 - **Custom Build Output** — choose and persist a build directory, with write-access and free-space checks
 - **Build Version Status** — compare local and remote Git revisions and inspect new commits
-- **Live Logs** — real-time build output
-- **Build History** — all build results saved for reference
+- **Live Logs** — batched, read-only build output with a 5,000-line display limit
+- **Build History** — saved results in a native Qt table; double-click for full details
+- **Searchable Selectors** — filter sources, profiles and remote branches with keyboard support
+- **Persistent Window State** — restore position, size, maximized state and build/log split
 
 <h2>Screenshots</h2>
+
+These screenshots show the original interface used as the visual reference for
+the Qt migration; they are not new v2.3.9 captures.
 
 <table>
   <tr>
@@ -105,27 +127,43 @@ python app.py
 
 ## Project Structure
 
-```
-├── app.py                   # Main GUI (CustomTkinter)
-├── python_manager.py        # Cross-platform interpreter selection + install
-├── hardware_check.py        # CPU/RAM/GPU/CUDA/Vulkan/ROCm/SYCL + RDNA4 detection
+```text
+├── app.py                   # QApplication entry point
+├── ui/
+│   ├── main_window.py       # Native Qt window and persistent page navigation
+│   ├── theme.py             # Shared palette and Qt/Fluent widget styling
+│   ├── widgets.py           # Cards, searchable selectors, tables and bounded logs
+│   ├── pages/               # Build configuration, sources, profiles and history
+│   ├── dialogs/             # Source/profile editors, installer and updater dialogs
+│   ├── workers/             # Qt tasks, existing build-backend adapter and updater
+│   ├── reports.py           # Existing report and manual-guide formatting
+│   └── settings.py          # Serialized settings writes
+├── python_manager.py        # Interpreter selection and dependency installation
+├── hardware_check.py        # CPU/RAM/GPU and build recommendations
 ├── dependency_checker.py    # Dependency detection
-├── dependency_installer.py  # Auto-install (winget/apt/dnf/pacman/zypper/brew)
-├── builder.py               # Build orchestration (dispatches by platform)
-├── repo_manager.py          # Git clone/update (PRs + submodules)
-├── source_manager.py        # Build source management
-├── profile_manager.py       # Build profile management
-├── config.py                # Global config + default sources
-├── logger.py                # Logging
+├── dependency_installer.py  # Platform-specific dependency installation
+├── builder.py               # Existing build orchestration
+├── repo_manager.py          # Git clone/update, PRs and submodules
+├── source_manager.py        # Source definitions and remote branches
+├── source_version.py        # Local/remote build version checks
+├── profile_manager.py       # Build profiles and CMake flags
+├── app_settings.py          # Existing settings and output-path validation
+├── config.py / logger.py    # Configuration and logging
 ├── build_llamacpp.ps1       # Windows build pipeline
 ├── build_llamacpp.sh        # macOS/Linux build pipeline
-├── start.bat / start.sh     # Launchers (use python_manager)
-├── data/                    # sources.json + profiles.json (history/report are generated)
+├── start.bat / start.sh     # Launchers using python_manager
+├── data/                    # Source/profile definitions and runtime settings
+├── scripts/check_*qt*.py    # DPI, responsiveness and frozen-EXE probes
+├── tests/                   # Backend and Qt regression tests
+├── docs/qt-migration.md     # Migration scope and acceptance checklist
+├── legacy_app.py            # Original GUI retained for comparison only
 └── pyproject.toml
 ```
 
 ## Requirements
 
+- Python **3.10+** for source launches
+- **PySide6 >= 6.8, < 7** and **PySide6-Fluent-Widgets >= 1.8, < 2** (installed by the launchers or `requirements.txt`)
 - A C/C++ toolchain (VS Build Tools on Windows, GCC/Clang on Linux, Xcode/Clang on macOS)
 - Git, CMake, Ninja
 - A GPU backend toolkit when not building CPU-only (CUDA / Vulkan SDK / ROCm / Intel oneAPI)
@@ -137,9 +175,24 @@ python -m pip install -e ".[dev]"
 pytest
 ```
 
-The tests cover the recommendation logic with synthetic hardware reports
-(RDNA4 detection, CUDA 12/13 selection, Apple Silicon vs. Intel Mac) and
-run on any platform.
+The suite covers backend behavior, hardware recommendations, Qt worker signal
+delivery, build success/failure handling, source/profile CRUD, stale branch
+responses, settings persistence, bounded logs and staged updater downloads.
+The v2.3.9 validation run passed **110 tests**; Qt tests use the offscreen platform.
+
+Additional native Windows checks:
+
+```powershell
+python scripts/check_qt_dpi.py
+python scripts/check_qt_responsiveness.py
+python scripts/check_frozen_qt.py dist/Llama.cpp-Build-Assistant-Windows.exe
+```
+
+DPI rendering was checked at 100%, 125%, 150%, 175% and 200%. The Windows
+executable passed its startup/rendering smoke test with `qwindows.dll` present
+and no Tk imports. Interactive drag/snap/multi-monitor checks, real compiler
+builds, dependency installation and a live update/restart remain separate
+[acceptance checks](docs/qt-migration.md#remaining-release-acceptance).
 
 ## Windows native CPU flags and Vulkan output paths
 
@@ -171,6 +224,31 @@ an old CMake cache with absolute paths. Existing outputs are not relocated.
 The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
 
 ## Changelog
+
+### 2.3.9
+
+- Migrated the main GUI from CustomTkinter/Tk to **PySide6 / Qt 6 + Fluent Widgets**,
+  retaining the dark palette, sidebar, page order, card layout and initial window size.
+- Reduced `app.py` to the application entry point and moved the GUI into `ui/`,
+  with centrally managed styling, reusable widgets, pages, dialogs and workers.
+- Replaced Tk UI queues and resize-freeze logic with queued Qt signals, background
+  workers and native layouts. Pages are reused through `QStackedWidget`.
+- Added batched `QPlainTextEdit` build output with a 5,000-line display limit,
+  searchable Qt selectors and native source/profile/history tables.
+- Reconnected source/profile management, branch discovery, version checks,
+  hardware/dependency checks and builds to the existing backend. Coalesced rapid
+  source-version requests and ignored stale branch responses.
+- Preserved existing settings and added window geometry, maximized-state and
+  build/log splitter persistence; serialized settings writes across workers.
+- Moved application updates into a worker service with verified HTTPS, staged
+  downloads, rollback on replacement errors and preservation of runtime data.
+- Updated launchers and PyInstaller packaging for Qt, Fluent resources and icons;
+  source launches now require **Python 3.10+**. CustomTkinter is no longer a
+  production dependency; the original GUI remains an optional comparison copy.
+- Added Qt and updater regression tests: **110 tests passed**. Native Windows
+  DPI rendering checks (100–200%), real hardware/dependency checks under log load
+  and the packaged Windows startup/rendering smoke test passed. Full interactive
+  acceptance and real compiler-build validation remain documented separately.
 
 ### 2.3.8
 

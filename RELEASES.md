@@ -1,5 +1,27 @@
 # Release builds
 
+## v2.3.9
+
+- Replace the main CustomTkinter/Tk GUI with PySide6 / Qt 6 + Fluent Widgets,
+  retaining the existing dark palette, sidebar, page order and card layout.
+- Use persistent Qt pages, queued worker signals and native layouts for
+  background builds/checks and window resizing. Batch live logs and cap the
+  display at 5,000 lines.
+- Preserve the existing build backend, source/profile management, searchable
+  branch selection, version checks and build-history functionality.
+- Save window geometry, maximized state and the build/log splitter alongside
+  existing settings, with serialized writes.
+- Stage application-update downloads, verify HTTPS and preserve runtime data.
+- Update dependency bootstrapping and PyInstaller packaging for Qt and Fluent
+  resources. Source launches require Python 3.10+.
+- Pass 110 regression tests, native Windows DPI rendering checks at 100–200%,
+  real hardware/dependency checks under log load, and the Windows EXE smoke test.
+
+Interactive drag/snap/multi-monitor acceptance, real compiler builds,
+installation/update workflows and native Linux/macOS packages still require
+validation. See [the migration report](docs/qt-migration.md). The original GUI
+is retained as an optional comparison copy and excluded from releases.
+
 ## v2.3.8
 
 - Prevent deep Windows/Vulkan output paths from reaching MSBuild/FileTracker
@@ -47,7 +69,9 @@ Builds are not code-signed or notarized. Linux builds target the libraries
 available on the Ubuntu runner, not every older Linux distribution.
 
 `scripts/prepare_icons.py` converts `icon.png` into ICO, ICNS and PNG files.
-`logo.png`, `icon.png`, `VERSION` and both build scripts are bundled.
+`logo.png`, `logo_big.png`, `icon.png`, `VERSION` and both build scripts are bundled.
+Qt platform plugins and Fluent widget resources are collected by PyInstaller;
+the Windows smoke test verifies `qwindows.dll` and renders all eight pages.
 The source/profile JSON files are bundled as templates. Missing configuration
 files are created from these templates at launch. On the first launch of this
 version, empty source/profile files from older builds are backed up as

@@ -51,12 +51,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk
+          sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt pyinstaller pytest
+
+      - name: Test backend and Qt integration
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -p no:cacheprovider
 
       - name: Prepare icons
         run: python scripts/prepare_icons.py
@@ -71,9 +76,12 @@ jobs:
             --windowed \
             --name "${{ matrix.pyinstaller_name }}" \
             --icon "${{ matrix.icon_arg }}" \
-            --collect-all customtkinter \
+            --collect-all qfluentwidgets \
+            --exclude-module tkinter \
+            --exclude-module customtkinter \
             --add-data "icon.png${{ matrix.add_data_sep }}." \
             --add-data "logo.png${{ matrix.add_data_sep }}." \
+            --add-data "logo_big.png${{ matrix.add_data_sep }}." \
             --add-data "VERSION${{ matrix.add_data_sep }}." \
             --add-data "data/sources.json${{ matrix.add_data_sep }}data" \
             --add-data "data/profiles.json${{ matrix.add_data_sep }}data" \
@@ -81,6 +89,10 @@ jobs:
             --add-data "build_llamacpp.sh${{ matrix.add_data_sep }}." \
             --add-data "build_assets/icon.ico${{ matrix.add_data_sep }}build_assets" \
             app.py
+
+      - name: Smoke test Windows executable
+        if: runner.os == 'Windows'
+        run: python scripts/check_frozen_qt.py dist/Llama.cpp-Build-Assistant-Windows.exe
 
       - name: Normalize artifact name
         shell: bash

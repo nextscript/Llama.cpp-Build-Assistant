@@ -1,29 +1,41 @@
+# v2.3.9 — Qt GUI migration
+
 ## What's changed
 
-- **Windows/Vulkan path validation (#6):** Check projected nested MSBuild/FileTracker
-  paths before starting a build. Account for custom source suffixes, collision
-  timestamps and explicit PowerShell build directories. Reject excessive paths
-  with guidance to use a fresh shorter output root, without moving existing outputs.
-- **Native Windows/MSVC CPU features (#5):** Supplement upstream detection with
-  live AVX-VNNI/BMI2 flags for CPU, CUDA and Vulkan builds. Check Windows AVX state
-  support, clear unsupported cached features and preserve explicit profile
-  overrides. Portable and other compiler flag paths retain their existing behavior.
-- **Saved build choices:** Restore validated CPU-target and parallel-job settings.
-  Clarify that detected features do not guarantee effective compiler settings.
-- **Regression coverage:** All 82 tests pass, including direct PowerShell preflight,
-  preservation of existing builds, flag transport, profile overrides and settings.
-
-## Thanks
-
-Thank you, **DaWaste ([@DaWasteh](https://github.com/DaWasteh))**, for reporting
-[#5](https://github.com/nextscript/Llama.cpp-Build-Assistant/issues/5) and
-[#6](https://github.com/nextscript/Llama.cpp-Build-Assistant/issues/6), and for
-providing detailed reproduction steps, real build evidence and tested workarounds!
+- **PySide6 / Qt 6 + Fluent Widgets:** Replace the main CustomTkinter/Tk GUI while
+  retaining the dark palette, 150-pixel sidebar, eight-page navigation, cards and
+  1600 × 1024 initial window size. The existing build backend and scripts are reused.
+- **Background work and native layouts:** Use Qt worker threads and queued signals
+  for builds, checks, Git queries, downloads and larger file operations. Reuse pages
+  through `QStackedWidget` and remove the Tk resize-freeze and UI-queue mechanisms.
+- **Build logs and management:** Batch live output in a read-only `QPlainTextEdit`
+  capped at 5,000 lines. Use searchable Qt selectors and native tables for sources,
+  profiles and history, with Qt editors, progress dialogs and file pickers.
+- **Settings compatibility:** Keep existing JSON settings and add saved window
+  geometry, maximized state and build/log splitter positions. Serialize settings
+  writes and ignore stale results from background branch queries.
+- **Application updater:** Verify HTTPS, stage downloads before replacement,
+  roll back replacement errors and preserve runtime data directories.
+- **Packaging and dependencies:** Update launchers and PyInstaller for Qt platform
+  plugins, Fluent resources and existing icons. Source launches require Python
+  **3.10+**. CustomTkinter is no longer a production dependency.
 
 ## Validation
 
-The regression suite, Python syntax checks and Git whitespace checks passed.
-A full GPU build and model-inference validation were not performed for this release.
+- **110 regression tests passed**, including Qt thread delivery, build success and
+  failure handling, source/profile CRUD, settings persistence and updater staging.
+- All eight pages rendered with the native Windows Qt platform at **100%, 125%,
+  150%, 175% and 200%** scaling.
+- Real hardware/dependency checks completed while processing 50,000 synthetic log
+  lines and programmatic page/move/resize operations; the display retained 5,000 lines.
+- The windowed Windows executable was built and passed its startup/rendering smoke
+  test with `qwindows.dll` available and no Tk imports.
+
+Full interactive drag/snap/multi-monitor acceptance, real compiler builds,
+dependency installation, a live update/restart and native Linux/macOS package
+validation remain open. The original GUI is retained as `legacy_app.py` for
+comparison and is excluded from the executable. See the
+[migration and acceptance report](docs/qt-migration.md).
 
 ## Downloads
 
