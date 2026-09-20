@@ -3,6 +3,7 @@ Llama.cpp Build Assistant — Main GUI Application
 Uses CustomTkinter for a modern dark-themed interface..
 """
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
 import platform
 import threading
@@ -38,7 +39,8 @@ from dependency_installer import (
 from source_manager import (
     load_sources, save_sources, get_source_by_id,
     validate_source, get_default_source,
-    add_source, edit_source, delete_source
+    add_source, edit_source, delete_source,
+    get_remote_branches, RemoteBranchError
 )
 from builder import (
     run_build, save_build_result, get_build_history,
@@ -63,6 +65,254 @@ BLUE_HOVER = "#1d4ed8"
 GREEN = "#7bd45a"
 DANGER = "#dc2626"
 DANGER_HOVER = "#b91c1c"
+
+
+def cmake_option_is_off(flags, option_name):
+    """Return whether the final explicit CMake value for an option is OFF."""
+    if isinstance(flags, str):
+        flags = [flags]
+    state = None
+    false_values = {"OFF", "FALSE", "NO", "N", "0"}
+    true_values = {"ON", "TRUE", "YES", "Y", "1"}
+    for flag in flags or []:
+        expression = str(flag).strip()
+        if not expression.upper().startswith("-D"):
+            continue
+        expression = expression[2:].strip()
+        if "=" not in expression:
+            continue
+        key, value = expression.split("=", 1)
+        key = key.split(":", 1)[0].strip().upper()
+        value = value.strip().upper()
+        if key != option_name.upper():
+            continue
+        if value in false_values:
+            state = False
+        elif value in true_values:
+            state = True
+    return state is False
+
+
+class SearchableDropdown(ctk.CTkFrame):
+    """Compact selector opening a searchable, scrollable popup."""
+
+    MAX_POPUP_HEIGHT = 320
+
+    def __init__(self, master, values=None, placeholder="Select an item...",
+                 search_placeholder="Search...", command=None, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self._values = list(values or [])
+        self._value = ""
+        self._placeholder = placeholder
+        self._search_placeholder = search_placeholder
+        self._command = command
+        self._popup = None
+        self._search = None
+        self._results = None
+        self._matches = []
+        self._previous_grab = None
+
+        self._trigger = ctk.CTkButton(
+            self, text="", anchor="w", height=34, corner_radius=6,
+            fg_color="#0b111a", hover_color="#121c29",
+            border_width=1, border_color=BORDER, text_color=TEXT,
+            command=self.toggle)
+        self._trigger.pack(fill="both", expand=True)
+        self._update_trigger()
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value or ""
+        self._update_trigger()
+        self._render_results()
+
+    def set_values(self, values):
+        self._values = list(values or [])
+        self._render_results()
+
+    def set_command(self, command):
+        self._command = command
+
+    def set_state(self, state):
+        self._trigger.configure(state=state)
+        if state == "disabled":
+            self.close()
+
+    def toggle(self):
+        if self._popup is not None and self._popup.winfo_viewable():
+            self.close()
+        else:
+            self.open()
+
+    def open(self):
+        if self._trigger.cget("state") == "disabled":
+            return
+        if self._popup is None or not self._popup.winfo_exists():
+            self._build_popup()
+
+        self.update_idletasks()
+        width = max(self.winfo_width(), 260)
+        row_count = max(1, min(len(self._values), 7))
+        height = min(self.MAX_POPUP_HEIGHT, 68 + row_count * 38)
+        x = self.winfo_rootx()
+        below_y = self.winfo_rooty() + self.winfo_height() + 4
+        screen_height = self.winfo_screenheight()
+        y = below_y if below_y + height <= screen_height - 12 else self.winfo_rooty() - height - 4
+        # The parent source dialog is modal. Temporarily release its grab so
+        # this popup can receive input, but do not grab the popup itself: a
+        # popup grab would disable the source dialog's native close button.
+        self._previous_grab = self.grab_current()
+        if self._previous_grab is not None:
+            try:
+                self._previous_grab.grab_release()
+            except Exception:
+                pass
+        self._popup.geometry(f"{width}x{height}+{x}+{max(4, y)}")
+        self._popup.deiconify()
+        self._popup.lift()
+        self._search.delete(0, "end")
+        self._render_results()
+        self._search.focus_force()
+
+    def close(self):
+        if self._popup is not None and self._popup.winfo_exists():
+            try:
+                if self._popup.grab_current() is self._popup:
+                    self._popup.grab_release()
+            except Exception:
+                pass
+            self._popup.withdraw()
+        previous_grab = self._previous_grab
+        self._previous_grab = None
+        if previous_grab is not None:
+            try:
+                if previous_grab.winfo_exists():
+                    previous_grab.grab_set()
+            except Exception:
+                pass
+
+    def _build_popup(self):
+        self._popup = ctk.CTkToplevel(self)
+        self._popup.withdraw()
+        self._popup.overrideredirect(True)
+        self._popup.transient(self.winfo_toplevel())
+        self._popup.configure(fg_color=BORDER)
+        self._popup.bind("<Escape>", lambda _event: self.close())
+        self._popup.bind("<FocusOut>", self._schedule_focus_check, add="+")
+        self._popup.bind("<ButtonPress-1>", self._close_on_outside_click,
+                         add="+")
+
+        box = ctk.CTkFrame(
+            self._popup, corner_radius=8, fg_color=SURFACE,
+            border_width=1, border_color=BORDER)
+        box.pack(fill="both", expand=True)
+        self._search = self._style_popup_entry(ctk.CTkEntry(
+            box, height=34, placeholder_text=self._search_placeholder))
+        self._search.pack(fill="x", padx=10, pady=(10, 6))
+        self._search.bind("<KeyRelease>", lambda _event: self._render_results())
+        list_frame = ctk.CTkFrame(box, fg_color="transparent", corner_radius=0)
+        list_frame.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
+        list_frame.grid_columnconfigure(0, weight=1)
+        list_frame.grid_rowconfigure(0, weight=1)
+        self._results = tk.Listbox(
+            list_frame, bg=SURFACE, fg=TEXT,
+            selectbackground=BLUE, selectforeground=TEXT,
+            borderwidth=0, highlightthickness=0, activestyle="none",
+            exportselection=False, font=("Segoe UI", 11))
+        self._results.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ctk.CTkScrollbar(
+            list_frame, command=self._results.yview,
+            button_color="#334155", button_hover_color="#475569")
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(5, 0))
+        self._results.configure(yscrollcommand=scrollbar.set)
+        self._results.bind("<ButtonRelease-1>", self._select_list_item)
+        self._results.bind("<Return>", self._select_list_item)
+        self._search.bind("<Down>", self._focus_results)
+
+    @staticmethod
+    def _style_popup_entry(entry):
+        entry.configure(
+            fg_color="#070b11", border_color="#3b82f6", border_width=1,
+            text_color=TEXT, placeholder_text_color=MUTED)
+        return entry
+
+    def _render_results(self):
+        if self._results is None or not self._results.winfo_exists():
+            return
+        # Avoid rebuilding a hidden popup. The native listbox can efficiently
+        # hold thousands of values without creating one Tk widget per branch.
+        if self._popup is None or not self._popup.winfo_viewable():
+            return
+        query = self._search.get().strip().casefold() if self._search else ""
+        self._matches = [value for value in self._values
+                         if not query or query in value.casefold()]
+        self._results.delete(0, "end")
+        if not self._matches:
+            self._results.insert("end", "No matching branches")
+            self._results.itemconfigure(0, fg=MUTED, selectbackground=SURFACE)
+            return
+        for value in self._matches:
+            self._results.insert("end", value)
+        if self._value in self._matches:
+            selected_index = self._matches.index(self._value)
+            self._results.selection_set(selected_index)
+            self._results.activate(selected_index)
+            self._results.see(selected_index)
+
+    def _focus_results(self, _event=None):
+        if self._matches:
+            self._results.focus_set()
+            if not self._results.curselection():
+                self._results.selection_set(0)
+                self._results.activate(0)
+        return "break"
+
+    def _select_list_item(self, _event=None):
+        selection = self._results.curselection()
+        if selection and selection[0] < len(self._matches):
+            self._select(self._matches[selection[0]])
+
+    def _select(self, value):
+        self.set(value)
+        self.close()
+        if self._command is not None:
+            self._command(value)
+
+    def _update_trigger(self):
+        label = self._value or self._placeholder
+        color = TEXT if self._value else MUTED
+        self._trigger.configure(text=f"{label}   ▾", text_color=color)
+
+    def _schedule_focus_check(self, _event=None):
+        self.after(30, self._close_if_focus_left)
+
+    def _close_on_outside_click(self, event):
+        if self._popup is None:
+            return
+        left = self._popup.winfo_rootx()
+        top = self._popup.winfo_rooty()
+        right = left + self._popup.winfo_width()
+        bottom = top + self._popup.winfo_height()
+        if not (left <= event.x_root < right and top <= event.y_root < bottom):
+            self.close()
+            return "break"
+
+    def _close_if_focus_left(self):
+        if self._popup is None or not self._popup.winfo_viewable():
+            return
+        focused = self._popup.focus_get()
+        if focused is None or focused.winfo_toplevel() is not self._popup:
+            self.close()
+
+    def _on_destroy(self, event):
+        if event.widget is self and self._popup is not None:
+            try:
+                self._popup.destroy()
+            except Exception:
+                pass
 
 
 def resource_path(relative_path):
@@ -456,8 +706,9 @@ class BuildAssistantApp(ctk.CTk):
             padx=20, pady=(15, 8), anchor="w")
         self.lbl_recommendation = ctk.CTkLabel(rec_frame, text="Running hardware check...",
                                                 font=ctk.CTkFont(size=14, weight="bold"),
-                                                text_color=("blue", "cyan"))
-        self.lbl_recommendation.pack(padx=20, pady=(5, 15), anchor="w")
+                                                text_color="#fbbf24",
+                                                anchor="w", justify="left")
+        self.lbl_recommendation.pack(padx=20, pady=(5, 15), anchor="w", fill="x")
 
         # Current source
         src_frame = self._card(frame)
@@ -562,6 +813,19 @@ class BuildAssistantApp(ctk.CTk):
         self.source_combo.pack(padx=20, pady=(5, 15), fill="x")
         self._update_source_combo()
 
+        profile_frame = self._card(scroll_frame)
+        profile_frame.pack(fill="x", padx=25, pady=8)
+        ctk.CTkLabel(profile_frame, text="Build Profile:",
+                      font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=20, pady=(15, 8), anchor="w")
+
+        self.profile_combo = self._style_combo(ctk.CTkComboBox(profile_frame, values=[],
+                                                               variable=self.selected_profile,
+                                                               command=self._on_manual_profile_changed,
+                                                               corner_radius=8, height=36))
+        self.profile_combo.pack(padx=20, pady=(5, 15), fill="x")
+        self._update_profile_combo()
+
         version_frame = self._card(scroll_frame)
         version_frame.pack(fill="x", padx=25, pady=8)
         ctk.CTkLabel(version_frame, text="Build Version Status",
@@ -569,27 +833,36 @@ class BuildAssistantApp(ctk.CTk):
             padx=20, pady=(15, 8), anchor="w")
         version_grid = ctk.CTkFrame(version_frame, fg_color="transparent")
         version_grid.pack(fill="x", padx=20, pady=(0, 8))
-        version_grid.grid_columnconfigure(1, weight=1)
+        version_grid.grid_columnconfigure(1, weight=1, uniform="version_value")
+        version_grid.grid_columnconfigure(3, weight=1, uniform="version_value")
         self.version_status_values = {}
-        version_fields = (
-            ("local_build", "Local Build:"),
-            ("remote_build", "Latest Available:"),
-            ("status", "Status:"),
-            ("local_commit", "Local Commit:"),
-            ("remote_commit", "Remote Commit:"),
-            ("branch", "Branch:"),
-            ("source_type", "Source Type:"),
-            ("last_update", "Last Update:"),
+        version_rows = (
+            (("local_build", "Local Build:"),
+             ("remote_build", "Latest Available:")),
+            (("local_commit", "Local Commit:"),
+             ("remote_commit", "Remote Commit:")),
+            (("branch", "Branch:"),
+             ("source_type", "Source Type:")),
+            (("status", "Status:"),
+             ("last_update", "Last Update:")),
         )
-        for row_index, (key, label_text) in enumerate(version_fields):
-            ctk.CTkLabel(version_grid, text=label_text, width=130, anchor="w",
-                         font=ctk.CTkFont(size=12), text_color=MUTED).grid(
-                row=row_index, column=0, sticky="w", pady=2)
-            value_label = ctk.CTkLabel(
-                version_grid, text="—", anchor="w", justify="left",
-                font=ctk.CTkFont(size=12))
-            value_label.grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=2)
-            self.version_status_values[key] = value_label
+        for row_index, row_fields in enumerate(version_rows):
+            for field_index, (key, label_text) in enumerate(row_fields):
+                label_column = field_index * 2
+                value_column = label_column + 1
+                label_pad = (18, 0) if field_index else (0, 0)
+                ctk.CTkLabel(
+                    version_grid, text=label_text, width=108, anchor="w",
+                    font=ctk.CTkFont(size=12), text_color=MUTED).grid(
+                        row=row_index, column=label_column, sticky="w",
+                        padx=label_pad, pady=3)
+                value_label = ctk.CTkLabel(
+                    version_grid, text="—", anchor="w", justify="left",
+                    font=ctk.CTkFont(size=12))
+                value_label.grid(
+                    row=row_index, column=value_column, sticky="ew",
+                    padx=(8, 0), pady=3)
+                self.version_status_values[key] = value_label
         self.version_status_message = ctk.CTkLabel(
             version_frame, text="", anchor="w", justify="left",
             wraplength=760, font=ctk.CTkFont(size=11), text_color=MUTED)
@@ -607,18 +880,56 @@ class BuildAssistantApp(ctk.CTk):
             fg_color=SURFACE_ALT, hover_color="#172235")
         self.view_source_changes_btn.pack(side="left", padx=(8, 0))
 
-        profile_frame = self._card(scroll_frame)
-        profile_frame.pack(fill="x", padx=25, pady=8)
-        ctk.CTkLabel(profile_frame, text="Build Profile:",
+        opt_frame = self._card(scroll_frame)
+        opt_frame.pack(fill="x", padx=25, pady=8)
+
+        ctk.CTkLabel(opt_frame, text="Build Options:",
                       font=ctk.CTkFont(size=14, weight="bold")).pack(
             padx=20, pady=(15, 8), anchor="w")
 
-        self.profile_combo = self._style_combo(ctk.CTkComboBox(profile_frame, values=[],
-                                                               variable=self.selected_profile,
-                                                               command=self._on_manual_profile_changed,
-                                                               corner_radius=8, height=36))
-        self.profile_combo.pack(padx=20, pady=(5, 15), fill="x")
-        self._update_profile_combo()
+        self.clean_build_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(opt_frame, text="Clean Build",
+                         variable=self.clean_build_var,
+                         font=ctk.CTkFont(size=13)).pack(
+            padx=20, pady=4, anchor="w")
+
+        self.update_repo_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(opt_frame, text="Update repository before build",
+                         variable=self.update_repo_var,
+                         font=ctk.CTkFont(size=13)).pack(
+            padx=20, pady=4, anchor="w")
+
+        self.build_ui_var = ctk.BooleanVar(value=bool(shutil.which("npm") or shutil.which("npm.cmd")))
+        self.build_ui_checkbox = ctk.CTkCheckBox(
+            opt_frame,
+            text="Build web UI with npm (unchecked: CMake downloads the prebuilt UI, needs internet)",
+            variable=self.build_ui_var,
+            font=ctk.CTkFont(size=13))
+        self.build_ui_checkbox.pack(
+            padx=20, pady=4, anchor="w")
+        self._update_build_ui_option(self.selected_profile.get())
+
+        self.core_only_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(opt_frame, text="Core tools only (llama-server, llama-cli, llama-bench, llama-quantize)",
+                         variable=self.core_only_var,
+                         font=ctk.CTkFont(size=13)).pack(
+            padx=20, pady=4, anchor="w")
+
+        row = ctk.CTkFrame(opt_frame, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=(8, 4))
+        ctk.CTkLabel(row, text="CPU target:", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.cpu_target_var = ctk.StringVar(value="portable")
+        self.cpu_target_combo = self._style_combo(ctk.CTkComboBox(
+            row, values=["portable", "native"], variable=self.cpu_target_var, width=130, height=30))
+        self.cpu_target_combo.pack(side="left", padx=(8, 18))
+        ctk.CTkLabel(row, text="Parallel jobs:", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.jobs_var = ctk.StringVar(value=str(os.cpu_count() or 4))
+        self.jobs_entry = self._style_field(ctk.CTkEntry(row, textvariable=self.jobs_var, width=70, height=30))
+        self.jobs_entry.pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(opt_frame, text="portable = AVX2/FMA/F16C, runs on any CPU since Haswell/Zen 1. "
+                                     "native = tuned for this PC (AVX-512/AMX), not portable.",
+                     font=ctk.CTkFont(size=11), text_color=MUTED, justify="left").pack(
+            padx=20, pady=(0, 15), anchor="w")
 
         output_frame = self._card(scroll_frame)
         output_frame.pack(fill="x", padx=25, pady=8)
@@ -643,53 +954,6 @@ class BuildAssistantApp(ctk.CTk):
         ctk.CTkLabel(output_frame, text=f"Default: {BUILDS_DIR}",
                      font=ctk.CTkFont(size=11), text_color=MUTED,
                      justify="left", wraplength=760).pack(
-            padx=20, pady=(0, 15), anchor="w")
-
-        opt_frame = self._card(scroll_frame)
-        opt_frame.pack(fill="x", padx=25, pady=8)
-
-        ctk.CTkLabel(opt_frame, text="Build Options:",
-                      font=ctk.CTkFont(size=14, weight="bold")).pack(
-            padx=20, pady=(15, 8), anchor="w")
-
-        self.clean_build_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(opt_frame, text="Clean Build",
-                         variable=self.clean_build_var,
-                         font=ctk.CTkFont(size=13)).pack(
-            padx=20, pady=4, anchor="w")
-
-        self.update_repo_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(opt_frame, text="Update repository before build",
-                         variable=self.update_repo_var,
-                         font=ctk.CTkFont(size=13)).pack(
-            padx=20, pady=4, anchor="w")
-
-        self.build_ui_var = ctk.BooleanVar(value=bool(shutil.which("npm") or shutil.which("npm.cmd")))
-        ctk.CTkCheckBox(opt_frame, text="Build web UI with npm (unchecked: CMake downloads the prebuilt UI, needs internet)",
-                         variable=self.build_ui_var,
-                         font=ctk.CTkFont(size=13)).pack(
-            padx=20, pady=4, anchor="w")
-
-        self.core_only_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(opt_frame, text="Core tools only (llama-server, llama-cli, llama-bench, llama-quantize)",
-                         variable=self.core_only_var,
-                         font=ctk.CTkFont(size=13)).pack(
-            padx=20, pady=4, anchor="w")
-
-        row = ctk.CTkFrame(opt_frame, fg_color="transparent")
-        row.pack(fill="x", padx=20, pady=(8, 4))
-        ctk.CTkLabel(row, text="CPU target:", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.cpu_target_var = ctk.StringVar(value="portable")
-        self.cpu_target_combo = self._style_combo(ctk.CTkComboBox(
-            row, values=["portable", "native"], variable=self.cpu_target_var, width=130, height=30))
-        self.cpu_target_combo.pack(side="left", padx=(8, 18))
-        ctk.CTkLabel(row, text="Parallel jobs:", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.jobs_var = ctk.StringVar(value=str(os.cpu_count() or 4))
-        self.jobs_entry = self._style_field(ctk.CTkEntry(row, textvariable=self.jobs_var, width=70, height=30))
-        self.jobs_entry.pack(side="left", padx=(8, 0))
-        ctk.CTkLabel(opt_frame, text="portable = AVX2/FMA/F16C, runs on any CPU since Haswell/Zen 1. "
-                                     "native = tuned for this PC (AVX-512/AMX), not portable.",
-                     font=ctk.CTkFont(size=11), text_color=MUTED, justify="left").pack(
             padx=20, pady=(0, 15), anchor="w")
 
         btn_frame = self._card(scroll_frame)
@@ -1320,8 +1584,21 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 self.clean_build_var.set(bool(profile.get("clean_build")))
             if hasattr(self, "update_repo_var") and "update_repo" in profile:
                 self.update_repo_var.set(bool(profile.get("update_repo")))
+            self._update_build_ui_option(profile_name)
             if hasattr(self, "version_status_values"):
                 self.check_selected_source_version()
+
+    def _update_build_ui_option(self, profile_name):
+        """Disable npm UI builds when the selected profile forces them off."""
+        if not hasattr(self, "build_ui_checkbox"):
+            return
+        profile = get_profile_by_name(profile_name) or {}
+        ui_disabled = cmake_option_is_off(
+            profile.get("cmake_flags", []), "LLAMA_BUILD_UI")
+        if ui_disabled:
+            self.build_ui_var.set(False)
+        self.build_ui_checkbox.configure(
+            state="disabled" if ui_disabled else "normal")
 
     def _on_manual_profile_changed(self, profile_name):
         self._profile_manually_selected = True
@@ -1423,7 +1700,8 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         profile_flags = profile.get("cmake_flags", [])
         update_repo = self.update_repo_var.get()
         clean_build = self.clean_build_var.get()
-        build_ui = self.build_ui_var.get()
+        build_ui = (self.build_ui_var.get()
+                    and not cmake_option_is_off(profile_flags, "LLAMA_BUILD_UI"))
         core_only = self.core_only_var.get()
         cpu_target = self.cpu_target_var.get() if self.cpu_target_var.get() in CPU_TARGETS else "portable"
         try:
@@ -1594,7 +1872,7 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         is_edit = source is not None
         dialog = ctk.CTkToplevel(self)
         dialog.title("Edit Build Source" if is_edit else "Add Build Source")
-        dialog.geometry("560x500")
+        dialog.geometry("600x650")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -1605,9 +1883,6 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         fields = [
             ("Name:", "name", "my-fork", source.get("name", "") if is_edit else ""),
             ("Repository URL:", "url", "https://github.com/user/repo", source.get("repo_url", "") if is_edit else ""),
-            ("Branch:", "branch", "master", source.get("branch", "") if is_edit else "master"),
-            ("Pinned Commit (optional):", "commit", "full commit sha", source.get("commit", "") if is_edit else ""),
-            ("Fetch Ref (optional):", "fetch_ref", "pull/17400/head", source.get("fetch_ref", "") if is_edit else ""),
         ]
 
         entries = {}
@@ -1619,15 +1894,195 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             entry.pack(pady=2, padx=20, fill="x")
             entries[key] = entry
 
+        custom_choice = "Custom branch..."
+        loading_choice = "Loading branches..."
+        unavailable_choice = "Branch detection unavailable"
+        original_branch = source.get("branch", "") if is_edit else ""
+        branch_state = {"branches": [], "url": "", "generation": 0,
+                        "debounce_job": None, "closed": False,
+                        "manual_selected": False}
+
+        ctk.CTkLabel(dialog, text="Branch:").pack(pady=(5, 0), padx=20, anchor="w")
+        branch_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        branch_row.pack(pady=2, padx=20, fill="x")
+        branch_combo = SearchableDropdown(
+            branch_row, values=[custom_choice], height=34,
+            placeholder="Select a branch...",
+            search_placeholder="Search branches...")
+        branch_combo.pack(side="left", fill="x", expand=True)
+        refresh_button = ctk.CTkButton(
+            branch_row, text="Refresh", width=82, height=34,
+            command=lambda: schedule_branch_load(
+                immediate=True, reset_manual=False))
+        refresh_button.pack(side="left", padx=(8, 0))
+
+        custom_label = ctk.CTkLabel(dialog, text="Custom Branch:")
+        custom_entry = self._style_field(ctk.CTkEntry(
+            dialog, placeholder_text="branch or ref", height=34))
+        if original_branch:
+            custom_entry.insert(0, original_branch)
+        branch_status = ctk.CTkLabel(dialog, text="Enter a repository URL",
+                                     text_color=MUTED, anchor="w")
+        branch_status.pack(pady=(3, 1), padx=20, fill="x")
+
+        def show_custom(show=True):
+            if show:
+                if not custom_label.winfo_manager():
+                    custom_label.pack(pady=(5, 0), padx=20, anchor="w",
+                                      before=branch_status)
+                    custom_entry.pack(pady=2, padx=20, fill="x",
+                                      before=branch_status)
+            else:
+                custom_label.pack_forget()
+                custom_entry.pack_forget()
+
+        def branch_selected(choice):
+            branch_state["manual_selected"] = choice == custom_choice
+            show_custom(choice in (custom_choice, unavailable_choice))
+
+        branch_combo.set_command(branch_selected)
+        branch_combo.set(custom_choice)
+        show_custom(True)
+
+        for label, key, placeholder, value in [
+            ("Pinned Commit (optional):", "commit", "full commit sha",
+             source.get("commit", "") if is_edit else ""),
+            ("Fetch Ref (optional):", "fetch_ref", "pull/17400/head",
+             source.get("fetch_ref", "") if is_edit else ""),
+        ]:
+            ctk.CTkLabel(dialog, text=label).pack(pady=(5, 0), padx=20, anchor="w")
+            entry = self._style_field(ctk.CTkEntry(dialog, placeholder_text=placeholder, height=34))
+            if value:
+                entry.insert(0, value)
+            entry.pack(pady=2, padx=20, fill="x")
+            entries[key] = entry
+
+        def apply_branch_result(generation, url, branches=None, default_branch="", error=""):
+            if branch_state["closed"] or not dialog.winfo_exists():
+                return
+            if generation != branch_state["generation"] or url != entries["url"].get().strip():
+                return
+            refresh_button.configure(state="normal")
+            if error:
+                branch_state["branches"] = []
+                branch_state["url"] = url
+                branch_combo.set_values([unavailable_choice, custom_choice])
+                branch_combo.set(unavailable_choice)
+                branch_status.configure(text=f"Could not load branches: {error}",
+                                        text_color="#f59e0b")
+                show_custom(True)
+                return
+
+            branch_state["branches"] = branches
+            branch_state["url"] = url
+            branch_combo.set_values(branches + [custom_choice])
+            if branch_state["manual_selected"]:
+                branch_combo.set(custom_choice)
+                show_custom(True)
+                status = f"Loaded {len(branches)} remote branches"
+                if default_branch:
+                    status += f" · Default: {default_branch}"
+                branch_status.configure(text=status, text_color=GREEN)
+                return
+            editing_original_remote = (
+                is_edit and url == source.get("repo_url", "").strip())
+            if editing_original_remote and original_branch not in branches:
+                branch_combo.set(custom_choice)
+                show_custom(True)
+                branch_status.configure(
+                    text="Branch not found in remote repository",
+                    text_color="#f59e0b")
+                return
+            if editing_original_remote:
+                selected = original_branch
+            elif "main" in branches:
+                selected = "main"
+            elif "master" in branches:
+                selected = "master"
+            elif default_branch in branches:
+                selected = default_branch
+            else:
+                selected = branches[0]
+            branch_combo.set(selected)
+            show_custom(False)
+            status = f"Loaded {len(branches)} remote branches"
+            if default_branch:
+                status += f" · Default: {default_branch}"
+            branch_status.configure(text=status, text_color=GREEN)
+
+        def load_branches(generation, url):
+            try:
+                branches, default_branch = get_remote_branches(url)
+                error = ""
+            except RemoteBranchError as exc:
+                branches, default_branch, error = [], "", str(exc)
+            except Exception as exc:
+                branches, default_branch, error = [], "", str(exc)
+            self._post_ui(lambda: apply_branch_result(
+                generation, url, branches, default_branch, error))
+
+        def start_branch_load():
+            branch_state["debounce_job"] = None
+            url = entries["url"].get().strip()
+            branch_state["generation"] += 1
+            generation = branch_state["generation"]
+            branch_state["branches"] = []
+            branch_state["url"] = url
+            if not url:
+                branch_combo.set_values([custom_choice])
+                branch_combo.set(custom_choice)
+                branch_status.configure(text="Enter a repository URL", text_color=MUTED)
+                refresh_button.configure(state="normal")
+                show_custom(True)
+                return
+            branch_combo.set_values([loading_choice, custom_choice])
+            branch_combo.set(loading_choice)
+            branch_status.configure(text=loading_choice, text_color=MUTED)
+            refresh_button.configure(state="disabled")
+            show_custom(False)
+            threading.Thread(target=load_branches, args=(generation, url), daemon=True).start()
+
+        def schedule_branch_load(*_args, immediate=False, reset_manual=True):
+            job = branch_state.get("debounce_job")
+            if job is not None:
+                try:
+                    dialog.after_cancel(job)
+                except Exception:
+                    pass
+            branch_state["generation"] += 1
+            branch_state["branches"] = []
+            if reset_manual:
+                branch_state["manual_selected"] = False
+            delay = 0 if immediate else 300
+            branch_state["debounce_job"] = dialog.after(delay, start_branch_load)
+
+        entries["url"].bind("<KeyRelease>", schedule_branch_load, add="+")
+
         def save():
             name = entries["name"].get().strip()
             url = entries["url"].get().strip()
-            branch = entries["branch"].get().strip() or "master"
+            choice = branch_combo.get()
+            if choice in (custom_choice, unavailable_choice):
+                branch = custom_entry.get().strip()
+            elif choice == loading_choice:
+                messagebox.showerror("Error", "Please wait until branch detection finishes.")
+                return
+            else:
+                branch = choice.strip()
             commit = entries["commit"].get().strip()
             fetch_ref = entries["fetch_ref"].get().strip()
 
             if not name or not url or not branch:
                 messagebox.showerror("Error", "Name, Repository URL and Branch are required.")
+                return
+
+            is_custom = choice in (custom_choice, unavailable_choice)
+            current_branches = branch_state["branches"]
+            if (is_custom and current_branches
+                    and branch_state["url"] == url
+                    and branch not in current_branches):
+                messagebox.showerror(
+                    "Error", "Branch not found in remote repository")
                 return
 
             if is_edit:
@@ -1640,13 +2095,28 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
                 self.build_sources = load_sources()
                 self._update_sources_list()
                 self._update_source_combo()
-                dialog.destroy()
+                close_dialog()
             else:
                 messagebox.showerror("Error", msg)
 
         ctk.CTkButton(dialog, text="Save" if is_edit else "Add", command=save,
                       fg_color=BLUE, hover_color=BLUE_HOVER,
                       corner_radius=8, height=36).pack(pady=18)
+
+        def close_dialog():
+            branch_state["closed"] = True
+            branch_state["generation"] += 1
+            job = branch_state.get("debounce_job")
+            if job is not None:
+                try:
+                    dialog.after_cancel(job)
+                except Exception:
+                    pass
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        if entries["url"].get().strip():
+            schedule_branch_load(immediate=True)
 
     def edit_selected_source(self):
         """Edit the selected source."""

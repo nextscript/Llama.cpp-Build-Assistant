@@ -1,5 +1,21 @@
 # Release builds
 
+## v2.3.6
+
+- Add asynchronous remote branch discovery for custom build sources using
+  `git ls-remote`, including default-branch detection, refresh, manual refs,
+  validation, and host-independent error handling.
+- Add a fast searchable branch selector that remains responsive with large
+  repositories and launches background Git queries without a console window
+  on Windows.
+- Refine the Build Configuration layout with a compact two-column version
+  status, reordered profile/options/output sections, and clearer dashboard
+  recommendation styling.
+- Disable the npm web UI option when the selected build profile explicitly
+  sets `LLAMA_BUILD_UI=OFF`.
+
+## Release automation
+
 Push a version tag (for example `v1.0.0`) to run the release workflow.
 Windows, Linux and macOS build in parallel. Each job uploads its artifact
 and attaches it to the GitHub Release for that tag.

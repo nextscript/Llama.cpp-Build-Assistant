@@ -5,7 +5,84 @@ Reads and writes to sources.json.
 """
 import json
 import os
+import subprocess
 from config import BUILD_SOURCES_FILE, LEGACY_BUILD_SOURCES_FILE, REPOS_DIR
+
+
+class RemoteBranchError(RuntimeError):
+    """Raised when branches cannot be read from a remote repository."""
+
+
+def sort_remote_branches(branches, default_branch=""):
+    """Return unique branches with main, master and the remote default first."""
+    unique = {branch.strip() for branch in branches if branch and branch.strip()}
+    preferred = []
+    for branch in ("main", "master", default_branch):
+        if branch and branch in unique and branch not in preferred:
+            preferred.append(branch)
+    return preferred + sorted(unique.difference(preferred), key=str.casefold)
+
+
+def get_remote_branches(repo_url, timeout=30):
+    """Return ``(branches, default_branch)`` without cloning the repository.
+
+    ``--symref`` exposes the symbolic HEAD (when the server supports it), while
+    the heads refspec keeps this implementation host-independent.
+    """
+    repo_url = (repo_url or "").strip()
+    if not repo_url:
+        raise RemoteBranchError("Invalid repository URL")
+
+    git_env = os.environ.copy()
+    git_env["GIT_TERMINAL_PROMPT"] = "0"
+    git_env["GCM_INTERACTIVE"] = "Never"
+    process_options = {}
+    if os.name == "nt":
+        # GUI builds must not flash a console window for the background Git
+        # query (CREATE_NO_WINDOW also covers git.exe child processes).
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = subprocess.SW_HIDE
+        process_options.update(
+            startupinfo=startup_info,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", "--", repo_url,
+             "HEAD", "refs/heads/*"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, env=git_env, **process_options,
+        )
+    except FileNotFoundError as exc:
+        raise RemoteBranchError("Git is not available") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RemoteBranchError("Repository query timed out") from exc
+    except OSError as exc:
+        raise RemoteBranchError(f"Could not start Git: {exc}") from exc
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        message = detail[-1] if detail else "Repository unavailable"
+        raise RemoteBranchError(message)
+
+    prefix = "refs/heads/"
+    branches = []
+    default_branch = ""
+    for line in result.stdout.splitlines():
+        if line.startswith("ref:"):
+            fields = line.split()
+            if len(fields) >= 3 and fields[2] == "HEAD" and fields[1].startswith(prefix):
+                default_branch = fields[1][len(prefix):]
+            continue
+        fields = line.split()
+        if len(fields) >= 2 and fields[1].startswith(prefix):
+            branches.append(fields[1][len(prefix):])
+
+    branches = sort_remote_branches(branches, default_branch)
+    if not branches:
+        raise RemoteBranchError("No remote branches found")
+    return branches, default_branch
 
 
 def load_sources():
