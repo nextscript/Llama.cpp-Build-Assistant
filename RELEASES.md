@@ -1,5 +1,14 @@
 # Release builds
 
+## v2.4.0
+
+- Enable dark native Windows title bars for the main window and dialogs.
+- Request Qt's dark color scheme and apply the native Windows setting when
+  top-level windows are shown. Unsupported Windows versions keep their default
+  title-bar appearance.
+- Verify the native dark-mode setting for main windows and dialogs, pass all
+  110 regression tests, and validate the Windows EXE across all eight pages.
+
 ## v2.3.9
 
 - Replace the main CustomTkinter/Tk GUI with PySide6 / Qt 6 + Fluent Widgets,

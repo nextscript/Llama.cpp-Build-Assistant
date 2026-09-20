@@ -1,4 +1,7 @@
 """The original application palette, shared by every Qt page and dialog."""
+import sys
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtWidgets import QWidget
 from qfluentwidgets import setTheme, setThemeColor, Theme
 
 BG = '#080d14'
@@ -13,7 +16,40 @@ GREEN = '#7bd45a'
 DANGER = '#dc2626'
 DANGER_HOVER = '#b91c1c'
 
+
+class _DarkTitleBars(QObject):
+    """Apply the native Windows theme whenever a top-level widget is shown."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        import ctypes
+        from ctypes import wintypes
+        self._ctypes = ctypes
+        self._set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        self._set_attribute.argtypes = [
+            wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        self._set_attribute.restype = ctypes.c_long
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.Show
+                and isinstance(obj, QWidget) and obj.isWindow()):
+            enabled = self._ctypes.c_int(1)
+            # Unsupported Windows versions simply reject the attribute.
+            self._set_attribute(
+                int(obj.winId()), 20, self._ctypes.byref(enabled),
+                self._ctypes.sizeof(enabled),
+            )
+        return False
+
+
 def apply_theme(app):
+    # Include native window decorations and dialogs in the app's dark theme.
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    if (sys.platform == 'win32' and app.platformName() == 'windows'
+            and not hasattr(app, '_dark_title_bars')):
+        app._dark_title_bars = _DarkTitleBars(app)
+        app.installEventFilter(app._dark_title_bars)
     setTheme(Theme.DARK)
     setThemeColor(BLUE)
     app.setStyleSheet(f'''

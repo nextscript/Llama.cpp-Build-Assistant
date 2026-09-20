@@ -8,7 +8,15 @@ compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
 
-## What's new in v2.3.9
+## What's new in v2.4.0
+
+Native Windows title bars now match the application's dark interface, including
+the main window and dialogs. The application requests Qt's dark color scheme
+and applies the native Windows dark-title-bar setting when windows are shown.
+
+See the [v2.4.0 changelog](#240) for details.
+
+## Qt interface (since v2.3.9)
 
 The GUI now runs on **PySide6 / Qt 6 + Fluent Widgets**, retaining the dark
 palette, 150-pixel sidebar, navigation order, cards and 1600 × 1024 initial
@@ -224,6 +232,16 @@ an old CMake cache with absolute paths. Existing outputs are not relocated.
 The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
 
 ## Changelog
+
+### 2.4.0
+
+- Enabled dark native Windows title bars for the main window and dialogs to
+  match the existing dark interface.
+- Set the application-wide Qt color scheme to dark and apply the native Windows
+  title-bar setting whenever a top-level window is shown. Unsupported Windows
+  versions retain their default title-bar appearance.
+- Verified the native Windows dark-mode setting for main windows and dialogs;
+  all **20 Qt UI regression tests passed**.
 
 ### 2.3.9
 
