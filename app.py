@@ -23,12 +23,13 @@ from config import (
     ROOT_DIR, BUNDLE_DIR, BUILDS_DIR, BUILD_SOURCES_FILE, BUILD_HISTORY_FILE,
     SYSTEM_REPORT_FILE, PROFILES_FILE,
     DEFAULT_BUILD_SOURCES, DEFAULT_BUILD_PROFILES,
-    BUILD_TYPES, BUILD_TYPE_DISPLAY, BUILD_TYPE_FLAGS
+    BUILD_TYPES, BUILD_TYPE_DISPLAY, BUILD_TYPE_FLAGS, get_dir_suffix
 )
 from app_settings import (
     BUILD_OUTPUT_DIRECTORY_KEY, WINDOW_POSITION_KEY, load_settings,
     normalize_window_position, save_setting,
-    validate_build_output_directory
+    validate_build_output_directory, validate_windows_vulkan_path,
+    CPU_TARGET_KEY, BUILD_JOBS_KEY, normalize_build_choices
 )
 from hardware_check import (run_full_check, get_recommendation, get_recommendation_reason,
                             select_profile_name, recommend_cuda_major)
@@ -953,12 +954,13 @@ class BuildAssistantApp(ctk.CTk):
         row = ctk.CTkFrame(opt_frame, fg_color="transparent")
         row.pack(fill="x", padx=20, pady=(8, 4))
         ctk.CTkLabel(row, text="CPU target:", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.cpu_target_var = ctk.StringVar(value="portable")
+        saved_target, saved_jobs = normalize_build_choices(load_settings())
+        self.cpu_target_var = ctk.StringVar(value=saved_target)
         self.cpu_target_combo = self._style_combo(ctk.CTkComboBox(
             row, values=["portable", "native"], variable=self.cpu_target_var, width=130, height=30))
         self.cpu_target_combo.pack(side="left", padx=(8, 18))
         ctk.CTkLabel(row, text="Parallel jobs:", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.jobs_var = ctk.StringVar(value=str(os.cpu_count() or 4))
+        self.jobs_var = ctk.StringVar(value=str(saved_jobs))
         self.jobs_entry = self._style_field(ctk.CTkEntry(row, textvariable=self.jobs_var, width=70, height=30))
         self.jobs_entry.pack(side="left", padx=(8, 0))
         ctk.CTkLabel(opt_frame, text="portable = AVX2/FMA/F16C, runs on any CPU since Haswell/Zen 1. "
@@ -1717,9 +1719,20 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         self.selected_build_type.set(bt)
 
         try:
+            validate_windows_vulkan_path(
+                os.path.realpath(os.path.abspath(os.path.expanduser(self.build_output_dir_var.get().strip()))),
+                bt, get_dir_suffix(source))
             build_output_dir, _free_bytes = validate_build_output_directory(
                 self.build_output_dir_var.get())
             save_setting(BUILD_OUTPUT_DIRECTORY_KEY, build_output_dir)
+            choices = {CPU_TARGET_KEY: self.cpu_target_var.get()}
+            try:
+                choices[BUILD_JOBS_KEY] = int(self.jobs_var.get().strip())
+            except (TypeError, ValueError):
+                pass
+            saved_target, saved_jobs = normalize_build_choices(choices)
+            save_setting(CPU_TARGET_KEY, saved_target)
+            save_setting(BUILD_JOBS_KEY, saved_jobs)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Invalid Build Output Directory", str(exc))
             return
@@ -2425,7 +2438,9 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         if arch == "arm64":
             return "CPU target: native (arm64 uses the compiler's own CPU detection)."
         if target == "native":
-            return "CPU target: native (GGML_NATIVE=ON, uses " + (", ".join(sorted(features)) or "compiler defaults") + ")."
+            return ("CPU target: native (requests GGML_NATIVE=ON). Detected: "
+                    + (", ".join(sorted(features)) or "unknown")
+                    + ". Effective instructions depend on compiler support and profile overrides.")
         if "AVX2" not in features and features:
             return "CPU target: portable (AVX2) - WARNING: this CPU reports no AVX2, choose 'native'."
         unused = [f for f in ("AVX512", "AMX") if f in features]

@@ -141,7 +141,60 @@ The tests cover the recommendation logic with synthetic hardware reports
 (RDNA4 detection, CUDA 12/13 selection, Apple Silicon vs. Intel Mac) and
 run on any platform.
 
+## Windows native CPU flags and Vulkan output paths
+
+Native CPU builds started through the GUI/Python dispatcher explicitly request
+detected AVX-VNNI and BMI2 on the Windows MSVC CPU/CUDA/Vulkan paths. Missing or
+unknown features are set OFF to clear stale cache values. Profile flags come
+last and can override these defaults, including typed `:BOOL` options. Portable,
+HIP/SYCL and non-Windows compiler settings are unchanged. CPU target and build
+jobs are saved when starting a build. Detection is not proof of the effective
+compiler definitions; check the generated CPU project when validating a build.
+
+Direct PowerShell callers can request these options explicitly on a supporting
+host:
+
+```powershell
+-CpuTarget native -ExtraFlags "-DGGML_AVX_VNNI=ON`n-DGGML_BMI2=ON"
+```
+
+Only enable features supported by the build/run machine.
+
+Windows/Vulkan builds now reject projected MSBuild FileTracker paths above
+248 UTF-16 characters (12 below legacy MAX_PATH). The estimate includes the
+`bUNKNOWN` version placeholder, custom source suffix and 21-digit collision
+timestamp; the actual build path is checked again before cleaning/configuring.
+This conservative estimate models the nested shader compiler probe in llama.cpp
+b11064, not every future CMake layout. If rejected, select a fresh short output
+root such as `C:\b` (a long custom suffix may also need shortening). Do not copy
+an old CMake cache with absolute paths. Existing outputs are not relocated.
+The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
+
 ## Changelog
+
+### 2.3.8
+
+- Added Windows/Vulkan path-budget checks in the GUI, Python dispatcher and
+  PowerShell script to prevent deep output paths from causing MSBuild
+  FileTracker failures ([#6](https://github.com/nextscript/Llama.cpp-Build-Assistant/issues/6)).
+  Checks account for custom source suffixes, collision timestamps and explicit
+  build directories, with guidance to use a shorter output root before cloning
+  or cleaning existing builds.
+- Fixed missing AVX-VNNI/BMI2 options in native Windows/MSVC CPU, CUDA and Vulkan
+  builds ([#5](https://github.com/nextscript/Llama.cpp-Build-Assistant/issues/5)).
+  Supplemental flags use live CPU detection and check Windows AVX state support;
+  unavailable features are explicitly disabled to clear stale cache values.
+  User profile overrides retain precedence, while portable and other compiler
+  paths keep their existing behavior.
+- Persisted validated CPU-target and parallel-job choices and clarified that
+  detected CPU features do not guarantee effective compiler settings.
+- Added regression coverage for path validation, preservation of existing
+  builds, native flag transport, profile overrides and saved settings;
+  all 82 tests pass.
+
+Thank you, DaWaste ([@DaWasteh](https://github.com/DaWasteh)), for reporting both issues
+and providing detailed reproduction steps, build evidence and tested
+workarounds!
 
 ### 2.3.7
 

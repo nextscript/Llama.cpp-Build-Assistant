@@ -4,7 +4,7 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @("Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls", "ConvertFrom-EncodedCMakeFlags")) {
+foreach ($name in @("Assert-VulkanPathBudget", "Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls", "ConvertFrom-EncodedCMakeFlags")) {
     $definition = $ast.Find({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }, $true)
@@ -14,6 +14,22 @@ foreach ($name in @("Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAtten
 function Log($msg) {}
 function OK($msg) {}
 function Is-Available($cmd) { return $true }
+
+Assert-VulkanPathBudget -Root 'C:\b' -Backend Vulkan
+Assert-VulkanPathBudget -Root $Workspace -Backend HIP
+Assert-VulkanPathBudget -Root $Workspace -Backend Vulkan -ActualBuildDir 'C:\b\build'
+foreach ($case in @(
+    @{ Root = 'L:\LAB\Llama.cpp-Build-Assistant\builds\validation-v2.3.7'; Backend = 'Vulkan' },
+    @{ Root = 'C:\b'; Backend = 'Vulkan'; Suffix = ('custom_' * 20) },
+    @{ Root = 'C:\b'; Backend = 'Vulkan'; ActualBuildDir = ('C:\' + ('deep\' * 40)) }
+)) {
+    $failed = $false
+    try { Assert-VulkanPathBudget @case } catch {
+        if ($_.Exception.Message -notmatch 'FTK1011/MSB8066') { throw }
+        $failed = $true
+    }
+    if (-not $failed) { throw 'Over-budget Vulkan path accepted' }
+}
 
 $encodedFlags = @(
     [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('-DFOO=ON')),

@@ -16,6 +16,8 @@ from config import (
 )
 from logger import log_build, log_error, log_warning
 from source_manager import get_source_by_id
+from app_settings import validate_windows_vulkan_path
+from hardware_check import detect_cpu_features
 
 
 # Executables that make up a usable Auto-Tuner folder. Used when the
@@ -23,6 +25,15 @@ from source_manager import get_source_by_id
 CORE_TARGETS = ["llama-server", "llama-cli", "llama-bench", "llama-quantize"]
 
 CPU_TARGETS = ("portable", "native")
+
+
+def native_msvc_supplement(cpu_target, features):
+    """Fill MSVC native-detection gaps; caller limits this to MSVC backends."""
+    if cpu_target != "native":
+        return []
+    features = set(features or ())
+    return [f"-DGGML_{name}={'ON' if name in features else 'OFF'}"
+            for name in ("AVX_VNNI", "BMI2")]
 
 
 def get_build_path(source_id, build_type, build_output_dir=None):
@@ -173,6 +184,13 @@ def run_build(source_id, build_type, update_repo_flag=False,
         build_output_dir or BUILDS_DIR)))
 
     system = platform.system()
+    try:
+        validate_windows_vulkan_path(output_dir, build_type, get_dir_suffix(source), system=system)
+    except ValueError as exc:
+        msg = str(exc)
+        if callback:
+            callback(msg)
+        return False, [msg], msg, [], ""
     if cpu_target not in CPU_TARGETS:
         cpu_target = "portable"
     try:
@@ -188,6 +206,12 @@ def run_build(source_id, build_type, update_repo_flag=False,
     if isinstance(custom_flags, str):
         custom_flags = custom_flags.splitlines()
     profile_flags = []
+    if system == "Windows" and build_type in ("CPU", "CUDA", "Vulkan") and cpu_target == "native":
+        try:
+            features = detect_cpu_features(system)
+        except Exception:
+            features = []
+        profile_flags.extend(native_msvc_supplement(cpu_target, features))
     for value in custom_flags or []:
         if not isinstance(value, str):
             continue

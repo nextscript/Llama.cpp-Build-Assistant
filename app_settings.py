@@ -1,6 +1,8 @@
 """Persistent application settings and build output directory validation."""
 import json
+import ntpath
 import os
+import platform
 import shutil
 import tempfile
 
@@ -10,6 +12,52 @@ from config import SETTINGS_FILE
 MIN_BUILD_FREE_BYTES = 10 * 1024 ** 3
 BUILD_OUTPUT_DIRECTORY_KEY = "build_output_directory"
 WINDOW_POSITION_KEY = "window_position"
+CPU_TARGET_KEY = "cpu_target"
+BUILD_JOBS_KEY = "build_jobs"
+
+# MSBuild/FileTracker is not reliably long-path aware. Reserve 10 characters
+# below MAX_PATH, including room for the terminator. Keep in sync with PS1.
+VULKAN_PATH_BUDGET = 250
+VULKAN_NESTED_PATH = (
+    r"ggml\src\ggml-vulkan\vulkan-shaders-gen-prefix\src\vulkan-shaders-gen-build"
+    r"\CMakeFiles\CMakeScratch\TryCompile-XXXXXX\cmTC_XXXXX.dir\Debug"
+    r"\cmTC_XXXXX.tlog\link-cvtres.write.1.tlog"
+)
+
+
+def validate_windows_vulkan_path(root, build_type, dir_suffix="llama.cpp",
+                                 *, system=None, checkout_name=None, build_dir=None):
+    """Pure path-budget check; no directories are created or moved.
+
+    Unknown versions reserve ten digits and the full collision timestamp.
+    The script checks the actual path again, covering longer future versions.
+    This representative upstream layout is a conservative estimate, not a
+    guarantee for every future CMake version.
+    """
+    if (system or platform.system()) != "Windows" or build_type != "Vulkan":
+        return
+    root = ntpath.normpath(root)
+    checkout_name = checkout_name or f"b0000000000_run_000000000000000000000_vulkan_{dir_suffix}"
+    build_dir = build_dir or ntpath.join(root, checkout_name, "build")
+    projected = ntpath.join(ntpath.normpath(build_dir), VULKAN_NESTED_PATH)
+    length = len(projected.encode("utf-16-le")) // 2
+    if length > VULKAN_PATH_BUDGET:
+        raise ValueError(
+            f"Windows/Vulkan path budget exceeded: {length}/{VULKAN_PATH_BUDGET} characters.\n"
+            f"Output root: {root}\nBuild directory: {build_dir}\n\n"
+            "Nested MSBuild/FileTracker paths can fail with FTK1011/MSB8066. "
+            "Select a shorter output root, for example C:\\b, and configure a fresh build. "
+            "Do not copy an old CMake cache. Existing outputs have not been moved or deleted.")
+
+
+def normalize_build_choices(settings):
+    target = settings.get(CPU_TARGET_KEY)
+    if target not in ("portable", "native"):
+        target = "portable"
+    jobs = settings.get(BUILD_JOBS_KEY)
+    if not isinstance(jobs, int) or isinstance(jobs, bool) or jobs <= 0:
+        jobs = os.cpu_count() or 4
+    return target, jobs
 
 
 def normalize_window_position(value):

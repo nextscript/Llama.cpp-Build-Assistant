@@ -10,6 +10,56 @@ import pytest
 import builder
 
 
+@pytest.mark.parametrize("system,backend,target,features,expected", [
+    ("Windows", "CPU", "native", ["AVX_VNNI", "BMI2"], ["ON", "ON"]),
+    ("Windows", "CUDA", "native", [], ["OFF", "OFF"]),
+    ("Windows", "Vulkan", "native", ["BMI2"], ["OFF", "ON"]),
+    ("Windows", "CPU", "native", None, ["OFF", "OFF"]),
+    ("Windows", "CPU", "portable", ["AVX_VNNI", "BMI2"], None),
+    ("Windows", "HIP", "native", ["AVX_VNNI", "BMI2"], None),
+    ("Windows", "SYCL", "native", ["AVX_VNNI", "BMI2"], None),
+    ("Linux", "CPU", "native", ["AVX_VNNI", "BMI2"], None),
+    ("Darwin", "CPU", "native", ["AVX_VNNI", "BMI2"], None),
+])
+@pytest.mark.parametrize("override", ["-DGGML_AVX_VNNI=OFF", "-DGGML_AVX_VNNI:BOOL=OFF"])
+def test_native_flags_transport_and_precedence(monkeypatch, system, backend, target, features, expected, override):
+    monkeypatch.setattr(builder.platform, "system", lambda: system)
+    monkeypatch.setattr(builder, "get_source_by_id", lambda _: {"id": "main"})
+    monkeypatch.setattr("sys.stdout", None)
+    def detect(_):
+        if features is None:
+            raise RuntimeError("detection unavailable")
+        return features
+    detector = Mock(side_effect=detect)
+    monkeypatch.setattr(builder, "detect_cpu_features", detector)
+    process = Mock(returncode=1, stdout=io.StringIO(""))
+    popen = Mock(return_value=process)
+    monkeypatch.setattr(builder.subprocess, "Popen", popen)
+    builder.run_build("main", backend, cpu_target=target, custom_flags=[override], build_output_dir="C:/b")
+    command = popen.call_args.args[0]
+    if system == "Windows":
+        flags = [base64.b64decode(f).decode() for f in command[command.index("-ExtraFlagsBase64") + 1].split(",")]
+    else:
+        flags = command[command.index("-F") + 1].splitlines()
+    automatic = [] if expected is None else [f"-DGGML_{name}={value}" for name, value in zip(("AVX_VNNI", "BMI2"), expected)]
+    assert flags == automatic + [override]
+    if expected is None:
+        detector.assert_not_called()
+
+
+def test_long_vulkan_path_does_not_launch_build(monkeypatch):
+    monkeypatch.setattr(builder.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(builder, "get_source_by_id", lambda _: {"id": "main"})
+    monkeypatch.setattr("sys.stdout", None)
+    popen = Mock()
+    monkeypatch.setattr(builder.subprocess, "Popen", popen)
+    result = builder.run_build("main", "Vulkan", clean_build=True,
+        build_output_dir=r"L:\LAB\Llama.cpp-Build-Assistant\builds\validation-v2.3.7")
+    assert not result[0]
+    assert "FTK1011" in result[2]
+    popen.assert_not_called()
+
+
 @pytest.mark.parametrize("backend, replies, ok", [
     ("CPU", [(1, "missing DLL")], False),
     ("CPU", [(0, "version: test"), (1, "device probe failed")], False),

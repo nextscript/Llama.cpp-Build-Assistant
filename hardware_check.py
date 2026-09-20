@@ -300,6 +300,17 @@ def get_cpu_info():
     }
 
 
+def _windows_avx_state_enabled():
+    """Windows must save both SSE and AVX state before AVX can be used."""
+    try:
+        get_features = ctypes.windll.kernel32.GetEnabledXStateFeatures
+        get_features.restype = ctypes.c_ulonglong
+        get_features.argtypes = []
+        return get_features() & 0x6 == 0x6
+    except Exception:
+        return False
+
+
 def detect_cpu_features(system):
     """Detect CPU instruction set features (accurate, never mis-reports)."""
     features = []
@@ -312,7 +323,7 @@ def detect_cpu_features(system):
             eax1, ebx1, ecx1, edx1 = l1
             osxsave = bool(ecx1 & (1 << 27))
             avx = bool(ecx1 & (1 << 28))
-            if avx and osxsave:
+            if avx and osxsave and _windows_avx_state_enabled():
                 features.append("AVX")
             if ecx1 & (1 << 12):
                 features.append("FMA")

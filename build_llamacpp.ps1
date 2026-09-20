@@ -108,6 +108,29 @@ $DIR_SUFFIX = if ($DirSuffix) { $DirSuffix } elseif ($config) { $config.Suffix }
 $REPO_PR = if ($RepoPr -gt 0) { $RepoPr } elseif ($config) { $config.PR } else { $null }
 $REPO_SUBMODULES = if ($RepoSubmodules) { $true } elseif ($config) { $config.Submodules } else { $false }
 
+function Assert-VulkanPathBudget {
+    param([string]$Root, [string]$Backend, [string]$Suffix = "llama.cpp",
+          [string]$ActualBuildDir = "")
+    if ($Backend -ne "Vulkan") { return }
+    # Keep the representative suffix and 250-character budget in sync with
+    # app_settings.py. Reserve ten version digits and the collision timestamp.
+    $rootPath = [IO.Path]::GetFullPath($Root)
+    if (-not $ActualBuildDir) {
+        $ActualBuildDir = [IO.Path]::Combine($rootPath, "b0000000000_run_000000000000000000000_vulkan_$Suffix\build")
+    }
+    $ActualBuildDir = [IO.Path]::GetFullPath($ActualBuildDir)
+    $nested = 'ggml\src\ggml-vulkan\vulkan-shaders-gen-prefix\src\vulkan-shaders-gen-build\CMakeFiles\CMakeScratch\TryCompile-XXXXXX\cmTC_XXXXX.dir\Debug\cmTC_XXXXX.tlog\link-cvtres.write.1.tlog'
+    $length = ([IO.Path]::Combine($ActualBuildDir, $nested)).Length
+    if ($length -gt 250) {
+        throw "Windows/Vulkan path budget exceeded: $length/250 characters. Output root: $rootPath. Build directory: $ActualBuildDir. Nested MSBuild/FileTracker paths can fail with FTK1011/MSB8066. Select a shorter output root, for example C:\b, and configure a fresh build. Do not copy an old CMake cache. Existing outputs have not been moved or deleted."
+    }
+}
+
+# Resolve explicit paths before any later Set-Location changes their meaning.
+$InstallDir = [IO.Path]::GetFullPath($InstallDir)
+if ($BuildDir) { $BuildDir = [IO.Path]::GetFullPath($BuildDir) }
+Assert-VulkanPathBudget -Root $InstallDir -Backend $BuildType -Suffix $DIR_SUFFIX -ActualBuildDir $BuildDir
+
 # Metal is a macOS-only backend. Bail out early with guidance on Windows.
 if ($BuildType -eq "Metal") {
     Write-Host "Metal backend is only available on macOS (Apple Silicon)." -ForegroundColor Red
@@ -1120,6 +1143,8 @@ function Get-BuildNumberName {
 
 if ($existingDir) {
     $dir = $existingDir.FullName
+    $checkBuildDir = if ($BuildDir) { $BuildDir } else { Join-Path $dir "build" }
+    Assert-VulkanPathBudget -Root $InstallDir -Backend $BuildType -ActualBuildDir $checkBuildDir
     if ($Update) {
         Log "Updating existing checkout: $dir"
         Push-Location $dir
@@ -1218,6 +1243,7 @@ if ([string]::IsNullOrEmpty($BuildDir)) {
     $buildDir = $BuildDir
 }
 
+Assert-VulkanPathBudget -Root $InstallDir -Backend $BuildType -ActualBuildDir $buildDir
 if ($CleanBuild -and (Test-Path $buildDir)) {
     Log "Deleting old build directory (clean build)..."
     Remove-PathWithRetry $buildDir

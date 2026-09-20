@@ -1,5 +1,23 @@
 # Release builds
 
+## v2.3.8
+
+- Prevent deep Windows/Vulkan output paths from reaching MSBuild/FileTracker
+  failures with path-budget checks before cloning or cleaning builds (#6).
+- Enable detected AVX-VNNI/BMI2 features in native Windows/MSVC CPU, CUDA and
+  Vulkan builds, respecting Windows AVX state support and explicit profile
+  overrides (#5). Portable and other compiler flag paths remain unchanged.
+- Persist CPU-target and parallel-job choices and clarify native CPU hints.
+- Add regression coverage; all 82 tests pass.
+
+Thank you, DaWaste ([@DaWasteh](https://github.com/DaWasteh)), for the detailed
+reports, reproduction steps, build evidence and tested workarounds for both issues!
+
+## v2.3.7
+
+- Persist and restore the main window position, including secondary monitors.
+- Center source and profile dialogs over the main application window.
+
 ## v2.3.6
 
 - Add asynchronous remote branch discovery for custom build sources using
