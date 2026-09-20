@@ -46,7 +46,7 @@ from builder import (
     extract_error_lines, CPU_TARGETS
 )
 from source_version import (
-    check_source_version, update_source_checkout
+    check_source_version
 )
 from profile_manager import load_profiles, add_profile, edit_profile, delete_profile, get_profile_by_name
 from logger import log_build, log_error, log_warning, log_install
@@ -108,7 +108,6 @@ class BuildAssistantApp(ctk.CTk):
         self._dependency_check_running = False
         self._source_version_generation = 0
         self._source_version_result = None
-        self._source_update_running = False
         self._resize_stable_size = None
         self._resize_frozen = False
         self._resize_thaw_job = None
@@ -602,11 +601,6 @@ class BuildAssistantApp(ctk.CTk):
             command=self.check_selected_source_version,
             fg_color=SURFACE_ALT, hover_color="#172235")
         self.check_source_version_btn.pack(side="left")
-        self.update_source_btn = ctk.CTkButton(
-            version_buttons, text="Update Source", width=125, height=34,
-            command=self.update_selected_source, state="disabled",
-            fg_color=BLUE, hover_color=BLUE_HOVER)
-        self.update_source_btn.pack(side="left", padx=(8, 0))
         self.view_source_changes_btn = ctk.CTkButton(
             version_buttons, text="View Changes", width=125, height=34,
             command=self.view_source_changes, state="disabled",
@@ -1198,8 +1192,6 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
 
     def check_selected_source_version(self):
         """Check the selected source in a worker thread without blocking the UI."""
-        if self._source_update_running:
-            return
         source = self._selected_build_source()
         if not source:
             return
@@ -1212,7 +1204,6 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
         self.version_status_values["status"].configure(text="Checking...", text_color=MUTED)
         self.version_status_message.configure(text="")
         self.check_source_version_btn.configure(state="disabled", text="Checking...")
-        self.update_source_btn.configure(state="disabled")
         self.view_source_changes_btn.configure(state="disabled")
 
         build_output_dir = os.path.abspath(os.path.expanduser(
@@ -1287,58 +1278,9 @@ For Vulkan: https://vulkan.lunarg.com/sdk/home
             details.append(result["message"])
         self.version_status_message.configure(text=" ".join(details))
 
-        can_update = (
-            result.get("update_allowed") and result.get("local_path") and
-            result.get("status") == "update_available")
-        self.update_source_btn.configure(state="normal" if can_update else "disabled")
         self.view_source_changes_btn.configure(
             state="normal" if result.get("changes") else "disabled")
         self.check_source_version_btn.configure(state="normal", text="Check for Updates")
-
-    def update_selected_source(self):
-        """Update the selected unpinned checkout after explicit confirmation."""
-        result = self._source_version_result or {}
-        source = self._selected_build_source()
-        if (not source or not result.get("update_allowed") or
-                not result.get("local_path") or source.get("commit")):
-            messagebox.showinfo(
-                "Update Source", "This source cannot be updated automatically.")
-            return
-        if self.is_building:
-            messagebox.showinfo(
-                "Update Source", "Wait for the current build to finish before updating the source.")
-            return
-        if not messagebox.askyesno(
-                "Update Source",
-                "Update the local source checkout to the latest remote commit?\n\n"
-                "Local source changes will be discarded. Existing build output is retained."):
-            return
-
-        self._source_update_running = True
-        self._source_version_generation += 1
-        self.check_source_version_btn.configure(state="disabled")
-        self.update_source_btn.configure(state="disabled", text="Updating...")
-        checkout = result["local_path"]
-
-        def worker():
-            try:
-                updated_path = update_source_checkout(source, checkout)
-                self._post_ui(lambda: self._source_update_finished(updated_path, ""))
-            except Exception as exc:
-                error = str(exc)
-                self._post_ui(lambda: self._source_update_finished("", error))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _source_update_finished(self, updated_path, error):
-        self._source_update_running = False
-        self.update_source_btn.configure(text="Update Source", state="disabled")
-        self.check_source_version_btn.configure(state="normal")
-        if error:
-            messagebox.showerror("Source Update Failed", error)
-        else:
-            messagebox.showinfo("Source Updated", f"Source updated successfully.\n\n{updated_path}")
-        self.check_selected_source_version()
 
     def view_source_changes(self):
         """Show commits available between the local and remote source versions."""
