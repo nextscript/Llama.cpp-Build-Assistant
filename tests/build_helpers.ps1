@@ -4,7 +4,7 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @("Assert-VulkanPathBudget", "Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls", "ConvertFrom-EncodedCMakeFlags")) {
+foreach ($name in @("Assert-VulkanPathBudget", "Get-WebUiFlags", "Get-UnusedBuildPath", "Convert-FlashAttentionFlags", "Deploy-CudaRuntimeDlls", "ConvertFrom-EncodedCMakeFlags", "Get-FailedTestOnlyProjects")) {
     $definition = $ast.Find({ param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }, $true)
@@ -129,4 +129,13 @@ Set-Content (Join-Path $incomplete "cudart64_13.dll") "incomplete SDK"
 $failed = $false
 try { Deploy-CudaRuntimeDlls -CudaBin $incomplete -Destination $destination } catch { $failed = $true }
 if (-not $failed) { throw "Stale destination DLLs masked an incomplete CUDA SDK" }
+$fakeBuild = Join-Path $Workspace "build"
+$testErr = "M:\x\tests\test-batch-alloc.cpp(785,33): error C2131: Ausdruck [$fakeBuild\tests\test-batch-alloc.vcxproj]"
+$toolErr = "M:\x\src\llama.cpp(1,1): error C2065: foo [$fakeBuild\src\llama.vcxproj]"
+$warn = "M:\x\src\llama.cpp(75,5): warning C4297: bar [$fakeBuild\src\llama.vcxproj]"
+$only = @(Get-FailedTestOnlyProjects -Lines @($warn, $testErr, $testErr) -BuildDir $fakeBuild)
+if ($only.Count -ne 1 -or $only[0] -ne "test-batch-alloc") { throw "Test-only build failure not recognised" }
+if (@(Get-FailedTestOnlyProjects -Lines @($testErr, $toolErr) -BuildDir $fakeBuild).Count) { throw "Tool failure treated as test-only" }
+if (@(Get-FailedTestOnlyProjects -Lines @("LINK : fatal error LNK1104: x") -BuildDir $fakeBuild).Count) { throw "Unattributed error treated as test-only" }
+if (@(Get-FailedTestOnlyProjects -Lines @($warn) -BuildDir $fakeBuild).Count) { throw "Warnings treated as test failure" }
 Write-Output "Build helper checks passed"

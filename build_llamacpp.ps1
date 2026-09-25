@@ -1328,6 +1328,23 @@ if ($BuildType -in @("HIP", "CUDA")) {
 $buildTargetArgs = @()
 if ($targetList.Count -gt 0) { $buildTargetArgs = @("--target") + $targetList; OK "Targets: $($targetList -join ', ')" }
 
+# Returns the failed test project names when every MSBuild error in $Lines
+# belongs to a project under <build>\tests, otherwise an empty list.
+function Get-FailedTestOnlyProjects {
+    param([string[]]$Lines, [string]$BuildDir)
+    $testsDir = ([IO.Path]::GetFullPath((Join-Path $BuildDir "tests")).TrimEnd('\') + '\').ToLowerInvariant()
+    $projects = @()
+    foreach ($line in $Lines) {
+        if ("$line" -notmatch ':\s*(fatal\s+)?error\s+[A-Za-z]*\d+\s*:') { continue }
+        if ("$line" -notmatch '\[([^\[\]]+\.vcxproj)\]\s*$') { return @() }
+        $project = [IO.Path]::GetFullPath($matches[1])
+        if (-not $project.ToLowerInvariant().StartsWith($testsDir)) { return @() }
+        $name = [IO.Path]::GetFileNameWithoutExtension($project)
+        if ($projects -notcontains $name) { $projects += $name }
+    }
+    return $projects
+}
+
 function Show-Result {
     param([string]$BinPath, [string]$Label)
     Log "BUILD SUCCESSFUL! ($Label)"
@@ -1523,14 +1540,24 @@ OK "CMake configuration successful"
 
 # --- 10. BUILD ---
 Log "Compiling $Source with $BuildType using $ParallelJobs jobs..."
-& $CMAKE_EXE --build $buildDir --config Release --parallel $ParallelJobs @buildTargetArgs
+# Tee stdout so a failure limited to llama.cpp's own unit tests can be told
+# apart from a real build failure (MSBuild keeps building independent targets).
+$buildLog = @()
+& $CMAKE_EXE --build $buildDir --config Release --parallel $ParallelJobs @buildTargetArgs | Tee-Object -Variable buildLog
+$buildExit = $LASTEXITCODE
+$binPath = Join-Path $buildDir "bin\Release"
 
-if ($LASTEXITCODE -ne 0) {
-    WARN "Build failed! Code: $LASTEXITCODE"
-    exit 1
+if ($buildExit -ne 0) {
+    $failedTests = @(Get-FailedTestOnlyProjects -Lines $buildLog -BuildDir $buildDir)
+    if ($failedTests.Count -gt 0 -and (Test-Path (Join-Path $binPath "llama-server.exe"))) {
+        WARN "Only upstream llama.cpp unit tests failed to compile: $($failedTests -join ', ')"
+        WARN "All tools were built; the failed test executables are skipped."
+    } else {
+        WARN "Build failed! Code: $buildExit"
+        exit 1
+    }
 }
 
-$binPath = Join-Path $buildDir "bin\Release"
 if ($BuildType -eq "CUDA" -and $cudaInstallDir) {
     Deploy-CudaRuntimeDlls -CudaBin (Join-Path $cudaInstallDir "bin") -Destination $binPath
 }

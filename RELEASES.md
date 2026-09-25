@@ -1,5 +1,15 @@
 # Release builds
 
+## v2.4.2
+
+- Keep Windows (Visual Studio) builds usable when only llama.cpp's own unit
+  tests fail to compile: if every MSBuild error belongs to a project under
+  `build	ests` and `llama-server.exe` was built, the tests are reported as
+  skipped and the build finishes successfully. Errors in any other target
+  still fail the build. Fixes CUDA builds of llama.cpp `4b1a27fa0` with
+  MSVC 19.51, where `tests/test-batch-alloc.cpp` fails with C2131.
+- Pass all 110 regression tests and the Windows folder-build smoke test.
+
 ## v2.4.1
 
 - Ship Windows as a folder build (`Llama.cpp-Build-Assistant-Windows.zip`):

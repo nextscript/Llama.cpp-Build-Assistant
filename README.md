@@ -8,16 +8,16 @@ compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
 
-## What's new in v2.4.1
+## What's new in v2.4.2
 
-The application now starts about **three times faster**. The Windows release is
-a folder build shipped as `Llama.cpp-Build-Assistant-Windows.zip`: it no longer
-unpacks 80 MB into a temporary folder on every launch, so the window appears in
-about 2 seconds instead of about 6. Unused Qt multimedia/FFmpeg libraries were
-removed from the package, and the `start.bat`/`start.sh` bootstrap reuses a
-ready virtualenv without searching all Python installations.
+A failing llama.cpp **unit test** no longer breaks the whole build. Current
+llama.cpp (`tests/test-batch-alloc.cpp`) does not compile with Visual Studio
+2026 (MSVC 19.51), although `llama-server`, `llama-cli` and all other tools
+build fine. On Windows the build assistant now detects when only projects under
+`build	ests` failed, skips those test executables with a warning and finishes
+the build. Errors in any real target still fail the build.
 
-See the [v2.4.1 changelog](#241) for details.
+See the [v2.4.2 changelog](#242) for details.
 
 ## Qt interface (since v2.3.9)
 
@@ -239,6 +239,18 @@ an old CMake cache with absolute paths. Existing outputs are not relocated.
 The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
 
 ## Changelog
+
+### 2.4.2
+
+- Windows builds with the Visual Studio generator no longer fail when only
+  llama.cpp's own unit tests fail to compile. If every MSBuild error belongs to
+  a project under `build	ests` and `llama-server.exe` exists, the failed test
+  executables are listed as skipped and the build completes (including CUDA
+  runtime DLL deployment). Errors in any other target still fail the build.
+- Fixes CUDA builds of llama.cpp `4b1a27fa0` with Visual Studio 2026
+  (MSVC 19.51), where `tests/test-batch-alloc.cpp` fails with C2131/C2078.
+- All **110 regression tests passed**; the Windows folder build passed its
+  startup/rendering smoke test across all eight pages.
 
 ### 2.4.1
 

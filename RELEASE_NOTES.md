@@ -1,21 +1,20 @@
-﻿# v2.4.1 — Faster startup
+﻿# v2.4.2 — Builds survive broken upstream tests
 
 ## What's changed
 
-- **About 3× faster startup on Windows:** The release is now a folder build
-  instead of a single-file EXE. It no longer unpacks 80 MB into a temporary
-  folder on every launch, so the window appears in about 2 seconds instead of
-  about 6.
-- **Smaller packages:** UPX compression is disabled and unused Qt modules
-  (Multimedia/FFmpeg, WebEngine, QML/Quick, PDF, Charts, 3D) are no longer
-  bundled.
-- **Faster source launch:** `start.bat`/`start.sh` reuse a ready virtualenv
-  without searching all Python installations and check required packages in a
-  single Python process (about 2.5 → 1 second).
+- **Test-only compile errors no longer fail the build (Windows):** Current
+  llama.cpp's `tests/test-batch-alloc.cpp` does not compile with Visual Studio
+  2026 (MSVC 19.51, error C2131), which made the whole build fail although
+  `llama-server`, `llama-cli` and all other tools were built. The build
+  assistant now checks the MSBuild log: if every error comes from a project
+  under `build	ests` and `llama-server.exe` exists, the failed tests are
+  reported as skipped and the build finishes normally, including CUDA runtime
+  DLL deployment. Errors in any other target still fail the build.
 
 ## Validation
 
-- All **110 regression tests passed**, including 20 Qt UI tests.
+- All **110 regression tests passed**, including new checks that test-only
+  failures are recognised and tool/linker errors are not.
 - Built the Windows folder executable and passed its startup/rendering smoke
   test across all eight pages using the native Windows Qt platform.
 
