@@ -139,6 +139,11 @@ def _package_ok(exe: str, import_name: str) -> bool:
 
 def _requirements_importable(exe: str) -> int:
     """Return the number of required packages that import successfully."""
+    # Fast path: probe all imports in one interpreter start.
+    names = list(REQUIRED_IMPORTS.values())
+    rc, _, _ = _run([exe, "-c", "import " + ", ".join(names)], timeout=60)
+    if rc == 0:
+        return len(names)
     ok = 0
     for import_name in REQUIRED_IMPORTS.values():
         if _package_ok(exe, import_name):
@@ -660,6 +665,11 @@ def ensure_compatible_python(on_log=None, auto_install: bool = True) -> Optional
     def log(msg):
         if on_log:
             on_log(msg)
+
+    # Fast path: skip interpreter discovery when the venv is already usable.
+    if venv_ready():
+        log(f"Reusing existing virtualenv: {VENV_DIR}")
+        return _venv_python_path()
 
     found = discover_pythons()
     log(f"Discovered {len(found)} Python interpreter(s):")

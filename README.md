@@ -8,13 +8,16 @@ compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
 
-## What's new in v2.4.0
+## What's new in v2.4.1
 
-Native Windows title bars now match the application's dark interface, including
-the main window and dialogs. The application requests Qt's dark color scheme
-and applies the native Windows dark-title-bar setting when windows are shown.
+The application now starts about **three times faster**. The Windows release is
+a folder build shipped as `Llama.cpp-Build-Assistant-Windows.zip`: it no longer
+unpacks 80 MB into a temporary folder on every launch, so the window appears in
+about 2 seconds instead of about 6. Unused Qt multimedia/FFmpeg libraries were
+removed from the package, and the `start.bat`/`start.sh` bootstrap reuses a
+ready virtualenv without searching all Python installations.
 
-See the [v2.4.0 changelog](#240) for details.
+See the [v2.4.1 changelog](#241) for details.
 
 ## Qt interface (since v2.3.9)
 
@@ -117,7 +120,11 @@ and binaries. HIP builds bundle the ROCm runtime DLLs and link the
 
 ### Quick start
 
-**Windows** — double-click `start.bat` (picks the right Python, installs
+**Windows (release)** — unzip `Llama.cpp-Build-Assistant-Windows.zip` and start
+`Llama.cpp-Build-Assistant-Windows.exe` inside the folder. Keep the EXE together
+with the other files in that folder.
+
+**Windows (source)** — double-click `start.bat` (picks the right Python, installs
 deps, launches the GUI; no admin rights needed).
 
 **macOS / Linux** — run:
@@ -193,7 +200,7 @@ Additional native Windows checks:
 ```powershell
 python scripts/check_qt_dpi.py
 python scripts/check_qt_responsiveness.py
-python scripts/check_frozen_qt.py dist/Llama.cpp-Build-Assistant-Windows.exe
+python scripts/check_frozen_qt.py dist/Llama.cpp-Build-Assistant-Windows/Llama.cpp-Build-Assistant-Windows.exe
 ```
 
 DPI rendering was checked at 100%, 125%, 150%, 175% and 200%. The Windows
@@ -232,6 +239,22 @@ an old CMake cache with absolute paths. Existing outputs are not relocated.
 The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
 
 ## Changelog
+
+### 2.4.1
+
+- Reduced Windows startup time from about 6 seconds to about 2 seconds by
+  building the release as a folder (PyInstaller `--onedir`) instead of a
+  single-file EXE that unpacked itself on every launch.
+- The Windows release asset is now `Llama.cpp-Build-Assistant-Windows.zip`;
+  unzip it and start `Llama.cpp-Build-Assistant-Windows.exe` inside the folder.
+- Disabled UPX compression and stopped bundling unused Qt modules
+  (Multimedia/FFmpeg, WebEngine, QML/Quick, PDF, Charts, 3D), which shrinks all
+  platform packages.
+- Sped up the `start.bat`/`start.sh` bootstrap from about 2.5 to about 1 second:
+  a ready virtualenv is reused without interpreter discovery, and all required
+  packages are checked in a single Python process.
+- All **110 regression tests passed**; the Windows folder build passed its
+  startup/rendering smoke test across all eight pages.
 
 ### 2.4.0
 

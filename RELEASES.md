@@ -1,5 +1,16 @@
 # Release builds
 
+## v2.4.1
+
+- Ship Windows as a folder build (`Llama.cpp-Build-Assistant-Windows.zip`):
+  startup drops from about 6 to about 2 seconds because the EXE no longer
+  unpacks itself on every launch.
+- Disable UPX and exclude unused Qt modules (Multimedia/FFmpeg, WebEngine,
+  QML/Quick, PDF, Charts, 3D) from all platform packages.
+- Reuse a ready virtualenv in the source bootstrap without interpreter
+  discovery and check required packages in one Python process.
+- Pass all 110 regression tests and the Windows folder-build smoke test.
+
 ## v2.4.0
 
 - Enable dark native Windows title bars for the main window and dialogs.
@@ -69,7 +80,7 @@ Push a version tag (for example `v1.0.0`) to run the release workflow.
 Windows, Linux and macOS build in parallel. Each job uploads its artifact
 and attaches it to the GitHub Release for that tag.
 
-- Windows: `Llama.cpp-Build-Assistant-Windows.exe`
+- Windows: `Llama.cpp-Build-Assistant-Windows.zip` (unzip, then start `Llama.cpp-Build-Assistant-Windows.exe` inside the folder; the folder build starts about three times faster than a single-file EXE)
 - Linux: `Llama.cpp-Build-Assistant-Linux` (run `chmod +x` after download)
 - macOS: `Llama.cpp-Build-Assistant-macOS.zip` containing the `.app`
 

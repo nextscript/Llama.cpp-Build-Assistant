@@ -18,17 +18,20 @@ jobs:
         include:
           - name: Windows
             runner: windows-latest
-            artifact_name: Llama.cpp-Build-Assistant-Windows.exe
+            artifact_name: Llama.cpp-Build-Assistant-Windows.zip
             pyinstaller_name: Llama.cpp-Build-Assistant-Windows
             icon_arg: build_assets/icon.ico
             add_data_sep: ";"
-            dist_path: dist/Llama.cpp-Build-Assistant-Windows.exe
+            # A folder bundle starts much faster than --onefile, which unpacks on every launch.
+            bundle_mode: --onedir
+            dist_path: dist/Llama.cpp-Build-Assistant-Windows
           - name: Linux
             runner: ubuntu-latest
             artifact_name: Llama.cpp-Build-Assistant-Linux
             pyinstaller_name: Llama.cpp-Build-Assistant-Linux
             icon_arg: build_assets/icon.png
             add_data_sep: ":"
+            bundle_mode: --onefile
             dist_path: dist/Llama.cpp-Build-Assistant-Linux
           - name: macOS
             runner: macos-latest
@@ -36,6 +39,7 @@ jobs:
             pyinstaller_name: Llama.cpp-Build-Assistant-macOS
             icon_arg: build_assets/icon.icns
             add_data_sep: ":"
+            bundle_mode: --onefile
             dist_path: dist/Llama.cpp-Build-Assistant-macOS.app
 
     steps:
@@ -72,11 +76,23 @@ jobs:
           pyinstaller \
             --noconfirm \
             --clean \
-            --onefile \
+            ${{ matrix.bundle_mode }} \
             --windowed \
+            --noupx \
             --name "${{ matrix.pyinstaller_name }}" \
             --icon "${{ matrix.icon_arg }}" \
-            --collect-all qfluentwidgets \
+            --collect-data qfluentwidgets \
+            --collect-submodules qfluentwidgets \
+            --exclude-module qfluentwidgets.multimedia \
+            --exclude-module PySide6.QtMultimedia \
+            --exclude-module PySide6.QtMultimediaWidgets \
+            --exclude-module PySide6.QtWebEngineCore \
+            --exclude-module PySide6.QtWebEngineWidgets \
+            --exclude-module PySide6.QtQml \
+            --exclude-module PySide6.QtQuick \
+            --exclude-module PySide6.QtPdf \
+            --exclude-module PySide6.QtCharts \
+            --exclude-module PySide6.Qt3DCore \
             --exclude-module tkinter \
             --exclude-module customtkinter \
             --add-data "icon.png${{ matrix.add_data_sep }}." \
@@ -92,13 +108,13 @@ jobs:
 
       - name: Smoke test Windows executable
         if: runner.os == 'Windows'
-        run: python scripts/check_frozen_qt.py dist/Llama.cpp-Build-Assistant-Windows.exe
+        run: python scripts/check_frozen_qt.py dist/Llama.cpp-Build-Assistant-Windows/Llama.cpp-Build-Assistant-Windows.exe
 
       - name: Normalize artifact name
         shell: bash
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "${{ matrix.dist_path }}" "${{ matrix.artifact_name }}"
+            7z a -tzip "${{ matrix.artifact_name }}" "./${{ matrix.dist_path }}"
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             if [[ -d "dist/${{ matrix.pyinstaller_name }}.app" ]]; then
               ditto -c -k --keepParent "dist/${{ matrix.pyinstaller_name }}.app" "${{ matrix.artifact_name }}"
