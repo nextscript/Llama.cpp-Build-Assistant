@@ -1,5 +1,15 @@
 # Release builds
 
+## v2.4.4
+
+- Make patch-series sources such as `ternii-ai/tritq-vllm` compile with
+  Visual Studio: after `git am` on Windows, replace
+  `__attribute__((always_inline))` with `__forceinline` and `<unistd.h>` with
+  a generated `tq-win-compat.h` (`pread`, `ssize_t`, `S_ISREG`) in the files
+  the series touched. Fixes C2143/C2065 errors in `ggml-cpu/quants.c`.
+- Pass all 82 non-GUI regression tests; MSVC build of the patched tree
+  verified (`llama-server`, `llama-cli`, `test-backend-ops`).
+
 ## v2.4.3
 
 - Build patch-series sources such as `ternii-ai/tritq-vllm`: when the

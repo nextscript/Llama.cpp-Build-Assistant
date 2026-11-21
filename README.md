@@ -8,15 +8,16 @@ compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
 
-## What's new in v2.4.3
+## What's new in v2.4.4
 
-Repositories that ship a **patch series** instead of a llama.cpp tree, such as
-[`ternii-ai/tritq-vllm`](https://github.com/ternii-ai/tritq-vllm), can now be
-used directly as a source Repo URL. The build assistant finds `PINNED_BASE` and
-`patches/NNNN-*.patch`, clones upstream llama.cpp at the pinned commit, applies
-the patches in `<checkout>/_patched` and builds from there.
+Patch-series sources such as
+[`ternii-ai/tritq-vllm`](https://github.com/ternii-ai/tritq-vllm) now also
+build with **Visual Studio** on Windows. The patches are written for
+GCC/Clang; the build assistant adjusts the patched files for MSVC
+(`__forceinline` instead of `__attribute__((always_inline))`, a small
+`pread`/`unistd.h` shim) right after applying them.
 
-See the [v2.4.3 changelog](#243) for details.
+See the [v2.4.4 changelog](#244) for details.
 
 ## Qt interface (since v2.3.9)
 
@@ -238,6 +239,17 @@ an old CMake cache with absolute paths. Existing outputs are not relocated.
 The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
 
 ## Changelog
+
+### 2.4.4
+
+- Windows: after a patch series is applied, the files it touched are made
+  MSVC-compatible: `__attribute__((always_inline))` becomes `__forceinline`,
+  and `#include <unistd.h>` in files without their own `_WIN32` handling is
+  replaced by a generated `tq-win-compat.h` (`pread` via `ReadFile`,
+  `ssize_t`, `S_ISREG`). Fixes the `ggml-cpu/quants.c` compile errors of
+  `ternii-ai/tritq-vllm` with Visual Studio.
+- The SSD expert cache of tritq-vllm (`LLAMA_MOE_SSD=1`) is macOS-only
+  upstream and not functional on Windows.
 
 ### 2.4.3
 

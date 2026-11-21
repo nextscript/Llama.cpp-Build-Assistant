@@ -1,27 +1,31 @@
-﻿# v2.4.3 — Patch-series sources (tritq-vllm)
+﻿# v2.4.4 — tritq-vllm builds with Visual Studio
 
 ## What's changed
 
-- **Patch-series repositories now build:** Some sources are not a llama.cpp
-  fork but a set of patches against a pinned upstream commit, for example
-  [`ternii-ai/tritq-vllm`](https://github.com/ternii-ai/tritq-vllm)
-  (`runtime/llama.cpp/PINNED_BASE` + `patches/NNNN-*.patch`). Using such a
-  repository as the Repo URL failed with *"does not appear to contain
-  CMakeLists.txt"*. The build assistant now detects the patch series, clones
-  the upstream repository named in `apply.sh` (default `ggml-org/llama.cpp`),
-  checks out the pinned commit, applies all patches with `git am` in
-  `<checkout>/_patched` and configures CMake from there. The patched tree is
-  reused and re-patched on later builds; the build output stays in
-  `<checkout>/build`. Works on Windows, Linux and macOS.
-- A repository with neither `CMakeLists.txt` nor a patch series now stops with
-  a clear message about the Repo URL instead of a CMake error.
+- **Patch series now compile with MSVC (Windows):** The `ternii-ai/tritq-vllm`
+  patches are written for GCC/Clang (Linux, macOS). With Visual Studio the
+  CUDA build failed in `ggml/src/ggml-cpu/quants.c` (error C2143 and friends)
+  because of `__attribute__((always_inline))`, and the MoE expert cache
+  (`src/llama-moe-cache.cpp`) needs `<unistd.h>` and `pread`. After applying a
+  patch series on Windows the build assistant now adjusts only the files the
+  series touched: `__attribute__((always_inline))` becomes `__forceinline`,
+  and `<unistd.h>` is replaced by a small generated `tq-win-compat.h`
+  (`pread` via `ReadFile`, `ssize_t`, `S_ISREG`) in files without their own
+  Windows handling. The changes stay in the working tree of
+  `<checkout>\_patched` and are redone on every build.
+- Note: the SSD expert cache of the series (`LLAMA_MOE_SSD=1`) is a macOS
+  feature upstream and is not functional on Windows; normal inference is
+  unaffected.
 
 ## Validation
 
 - All **82 non-GUI regression tests passed**.
-- Applied all 12 patches of `ternii-ai/tritq-vllm` (r5, base `ff5a233`) with
-  both the PowerShell and the Bash implementation, including a second run that
-  reuses the existing patched tree.
+- Applied all 12 patches of `ternii-ai/tritq-vllm` (r5) and built the patched
+  tree with Visual Studio 2022 (MSVC 19.44): `llama-server`, `llama-cli` and
+  `test-backend-ops` build; the CUDA backend (`ggml-cuda`, sm_120a) compiled in
+  the user's build. Only two upstream unit tests (`test-batch-alloc`,
+  `test-server-component`) fail to compile, which the existing test-only
+  handling reports as skipped.
 
 ## Downloads
 
