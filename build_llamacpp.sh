@@ -307,18 +307,18 @@ if [[ -n "$existing" ]]; then
                 && git fetch --all --prune \
                 && { [[ -z "$FETCH_REF_ARG" ]] || git fetch --force origin "$FETCH_REF_ARG"; } \
                 && git checkout --detach "$SOURCE_COMMIT_ARG" \
-                && git clean -fdx -e node_modules -e build )
+                && git clean -fdx -e node_modules -e build -e _patched )
         elif [[ -n "$REPO_PR" ]]; then
             ( cd "$dir" \
                 && git fetch --force origin "pull/${REPO_PR}/head:pr${REPO_PR}" \
                 && git checkout "pr${REPO_PR}" \
                 && git reset --hard "pr${REPO_PR}" \
-                && git clean -fdx -e node_modules -e build )
+                && git clean -fdx -e node_modules -e build -e _patched )
         else
             ( cd "$dir" \
                 && git fetch --all --prune \
                 && git reset --hard "origin/$REPO_BRANCH" \
-                && git clean -fdx -e node_modules -e build )
+                && git clean -fdx -e node_modules -e build -e _patched )
         fi
         ok "Updated to latest '$REPO_BRANCH'"
         # The build number may have moved: rename the folder to stay truthful.
@@ -357,12 +357,60 @@ else
 fi
 ok "Source commit: $(git -C "$dir" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)"
 
+# Patch-series repositories (e.g. ternii-ai/tritq-vllm) ship no llama.cpp tree,
+# only PINNED_BASE (an upstream commit) and patches/NNNN-*.patch. Build the
+# patched tree in "<checkout>/_patched" (kept across updates) and use it.
+src_dir="$dir"
+if [[ ! -f "$dir/CMakeLists.txt" ]]; then
+    pin_file=""
+    while IFS= read -r candidate; do
+        if compgen -G "$(dirname "$candidate")/patches/*.patch" >/dev/null; then pin_file="$candidate"; break; fi
+    done < <(find "$dir" -maxdepth 4 \( -name .git -o -name build -o -name _patched \) -prune -o -type f -name PINNED_BASE -print 2>/dev/null | sort)
+    if [[ -z "$pin_file" ]]; then
+        warn "No CMakeLists.txt in $dir and no patch series (PINNED_BASE + patches/*.patch) found."
+        warn "This repository is not a llama.cpp source tree - check the Repo URL of source '$SOURCE'."
+        exit 1
+    fi
+    series_dir="$(dirname "$pin_file")"
+    base="$(head -n1 "$pin_file" | tr -d '[:space:]')"
+    [[ "$base" =~ ^[0-9a-fA-F]{7,40}$ ]] || { warn "Invalid commit in $pin_file: '$base'"; exit 1; }
+    upstream="https://github.com/ggml-org/llama.cpp"
+    if [[ -f "$series_dir/apply.sh" ]]; then
+        found="$(grep -Eo 'git[[:space:]]+clone[[:space:]]+["'\'']?https://[^[:space:]"'\'']+' "$series_dir/apply.sh" | head -n1 | grep -Eo 'https://[^[:space:]"'\'']+' || true)"
+        [[ -n "$found" ]] && upstream="$found"
+    fi
+    patches=()
+    while IFS= read -r p; do patches+=("$p"); done < <(find "$series_dir/patches" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-*.patch' | sort)
+    [[ ${#patches[@]} -gt 0 ]] || { warn "No NNNN-*.patch files in $series_dir/patches"; exit 1; }
+    log "Patch series detected: ${series_dir#"$dir"/}"
+    ok "Base: $upstream @ $base (${#patches[@]} patches)"
+    target="$dir/_patched"
+    if [[ ! -d "$target/.git" ]]; then
+        rm -rf "$target"
+        git clone --no-checkout "$upstream" "$target" || { warn "git clone $upstream failed"; exit 1; }
+    fi
+    git -C "$target" am --abort >/dev/null 2>&1 || true
+    if ! git -C "$target" cat-file -e "${base}^{commit}" 2>/dev/null; then
+        git -C "$target" fetch origin || { warn "git fetch $upstream failed"; exit 1; }
+    fi
+    git -C "$target" checkout -q -f --detach "$base" || { warn "git checkout $base failed"; exit 1; }
+    git -C "$target" clean -fdx -e node_modules -q || { warn "git clean failed"; exit 1; }
+    if ! git -C "$target" -c user.name=tr-build -c user.email=tr-build@invalid am -q "${patches[@]}"; then
+        git -C "$target" am --abort >/dev/null 2>&1 || true
+        warn "Applying the patch series failed (git am)."
+        exit 1
+    fi
+    [[ -f "$target/CMakeLists.txt" ]] || { warn "Patched tree has no CMakeLists.txt: $target"; exit 1; }
+    ok "Patched source: $target ($(git -C "$target" rev-parse --short=9 HEAD))"
+    src_dir="$target"
+fi
+
 # ── Web UI ────────────────────────────────────────────────────────────────
 # Build assets explicitly for both the old and the current source layout.
 ui_flags=(-DLLAMA_BUILD_UI=ON -DLLAMA_USE_PREBUILT_UI=ON)
 ui_source=""
 for relative in tools/ui tools/server/webui; do
-    if [[ -f "$dir/$relative/package.json" ]]; then ui_source="$dir/$relative"; break; fi
+    if [[ -f "$src_dir/$relative/package.json" ]]; then ui_source="$src_dir/$relative"; break; fi
 done
 if [[ "$BUILD_UI" == "1" && -n "$ui_source" ]] && have npm; then
     log "Building Web UI: $ui_source"
@@ -379,7 +427,7 @@ fi
 if [[ "$SOURCE" == "ternary_bonsai" ]]; then ui_flags+=(-DLLAMA_OPENSSL=OFF); fi
 
 if [[ "$BUILD_TYPE" == "HIP" || "$BUILD_TYPE" == "CUDA" ]] &&
-   grep -Eq '^[[:space:]]*set[[:space:]]*\([[:space:]]*GGML_CUDA_FA_QUANTS[[:space:]]' "$dir/ggml/CMakeLists.txt"; then
+   grep -Eq '^[[:space:]]*set[[:space:]]*\([[:space:]]*GGML_CUDA_FA_QUANTS[[:space:]]' "$src_dir/ggml/CMakeLists.txt"; then
     ui_flags+=(-UGGML_CUDA_FA_ALL_QUANTS)
     converted_flags=()
     explicit_quants=0
@@ -437,7 +485,7 @@ esac
 ok "CPU target: $CPU_TARGET ($UNAME_M)"
 
 # Base flags (single-config Ninja/Makefiles on Unix).
-cmake_flags=(-S "$dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
+cmake_flags=(-S "$src_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
              -DLLAMA_BUILD_SERVER=ON -DLLAMA_CURL=OFF -DGGML_CCACHE=OFF
              "${cpu_flags[@]}")
 
@@ -476,7 +524,7 @@ case "$BUILD_TYPE" in
         fi
         ;;
     SYCL)
-        cmake_flags=(-S "$dir" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake_flags=(-S "$src_dir" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release
                      -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
                      -DGGML_SYCL=ON -DGGML_SYCL_F16=ON
                      -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_SERVER=ON

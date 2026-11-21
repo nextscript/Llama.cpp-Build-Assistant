@@ -8,16 +8,15 @@ compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
 
-## What's new in v2.4.2
+## What's new in v2.4.3
 
-A failing llama.cpp **unit test** no longer breaks the whole build. Current
-llama.cpp (`tests/test-batch-alloc.cpp`) does not compile with Visual Studio
-2026 (MSVC 19.51), although `llama-server`, `llama-cli` and all other tools
-build fine. On Windows the build assistant now detects when only projects under
-`build	ests` failed, skips those test executables with a warning and finishes
-the build. Errors in any real target still fail the build.
+Repositories that ship a **patch series** instead of a llama.cpp tree, such as
+[`ternii-ai/tritq-vllm`](https://github.com/ternii-ai/tritq-vllm), can now be
+used directly as a source Repo URL. The build assistant finds `PINNED_BASE` and
+`patches/NNNN-*.patch`, clones upstream llama.cpp at the pinned commit, applies
+the patches in `<checkout>/_patched` and builds from there.
 
-See the [v2.4.2 changelog](#242) for details.
+See the [v2.4.3 changelog](#243) for details.
 
 ## Qt interface (since v2.3.9)
 
@@ -239,6 +238,18 @@ an old CMake cache with absolute paths. Existing outputs are not relocated.
 The same guard applies to direct PowerShell calls and explicit `-BuildDir`.
 
 ## Changelog
+
+### 2.4.3
+
+- Patch-series sources: if a checkout has no `CMakeLists.txt` but contains
+  `PINNED_BASE` plus `patches/NNNN-*.patch` (e.g. `ternii-ai/tritq-vllm`,
+  `runtime/llama.cpp/`), the upstream repository from `apply.sh` (default
+  `ggml-org/llama.cpp`) is cloned into `<checkout>/_patched`, the pinned commit
+  is checked out and the patches are applied with `git am`. CMake is configured
+  from the patched tree; the build output stays in `<checkout>/build`. The tree
+  is kept across updates and re-patched on every build.
+- A checkout without `CMakeLists.txt` and without a patch series now fails
+  with a clear Repo URL message instead of a CMake error.
 
 ### 2.4.2
 

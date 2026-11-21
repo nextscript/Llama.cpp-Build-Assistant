@@ -1,5 +1,15 @@
 # Release builds
 
+## v2.4.3
+
+- Build patch-series sources such as `ternii-ai/tritq-vllm`: when the
+  checkout has no `CMakeLists.txt` but a `PINNED_BASE` file with
+  `patches/NNNN-*.patch`, clone the upstream repository, check out the pinned
+  commit, apply the patches with `git am` in `<checkout>/_patched` and build
+  from there (Windows, Linux, macOS). Fixes "does not appear to contain
+  CMakeLists.txt".
+- Pass all 82 non-GUI regression tests.
+
 ## v2.4.2
 
 - Keep Windows (Visual Studio) builds usable when only llama.cpp's own unit

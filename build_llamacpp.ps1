@@ -1170,7 +1170,7 @@ if ($existingDir) {
             git @gitLongPaths reset --hard "origin/$REPO_BRANCH"
             if ($LASTEXITCODE -ne 0) { WARN "git reset failed"; Pop-Location; exit 1 }
         }
-        git @gitLongPaths clean -fdx -e node_modules -e build
+        git @gitLongPaths clean -fdx -e node_modules -e build -e _patched
         if ($LASTEXITCODE -ne 0) { WARN "git clean failed"; Pop-Location; exit 1 }
         Pop-Location
         OK "Updated to latest '$REPO_BRANCH'"
@@ -1233,6 +1233,75 @@ if ($existingDir) {
 $headCommit = Invoke-Native { & git -C $dir rev-parse --short=9 HEAD }
 OK "Source commit: $headCommit"
 
+# Patch-series repositories (e.g. ternii-ai/tritq-vllm) do not contain a
+# llama.cpp tree: they ship PINNED_BASE (an upstream commit) plus
+# patches/NNNN-*.patch. Materialise the patched tree in "<checkout>\_patched"
+# (kept across updates, excluded from git clean) and configure CMake from it.
+$PATCHED_SUBDIR = "_patched"
+function Resolve-PatchSeriesSource {
+    param([Parameter(Mandatory=$true)][string]$Repo)
+    if (Test-Path -LiteralPath (Join-Path $Repo "CMakeLists.txt")) { return $Repo }
+
+    $pinFile = Get-ChildItem -LiteralPath $Repo -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @(".git", "build", $PATCHED_SUBDIR) } |
+        ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Recurse -Depth 3 -Filter "PINNED_BASE" -File -ErrorAction SilentlyContinue } |
+        Where-Object { Get-ChildItem -LiteralPath (Join-Path $_.DirectoryName "patches") -Filter "*.patch" -File -ErrorAction SilentlyContinue } |
+        Select-Object -First 1
+    if (-not $pinFile) { $pinFile = Get-Item -LiteralPath (Join-Path $Repo "PINNED_BASE") -ErrorAction SilentlyContinue }
+    if (-not $pinFile) {
+        WARN "No CMakeLists.txt in $Repo and no patch series (PINNED_BASE + patches/*.patch) found."
+        WARN "This repository is not a llama.cpp source tree - check the Repo URL of source '$Source'."
+        exit 1
+    }
+
+    $seriesDir = $pinFile.DirectoryName
+    $base = ((Get-Content -LiteralPath $pinFile.FullName -TotalCount 1) -as [string]).Trim()
+    if ($base -notmatch '^[0-9a-fA-F]{7,40}$') { WARN "Invalid commit in ${pinFile}: '$base'"; exit 1 }
+    $upstream = "https://github.com/ggml-org/llama.cpp"
+    $applyScript = Join-Path $seriesDir "apply.sh"
+    if (Test-Path -LiteralPath $applyScript) {
+        $m = Select-String -LiteralPath $applyScript -Pattern 'git\s+clone\s+["'']?(https://[^\s"'']+)' | Select-Object -First 1
+        if ($m) { $upstream = $m.Matches[0].Groups[1].Value }
+    }
+    $patches = @(Get-ChildItem -LiteralPath (Join-Path $seriesDir "patches") -Filter "*.patch" -File |
+        Where-Object { $_.Name -match '^\d{4}-' } | Sort-Object Name)
+    if ($patches.Count -eq 0) { WARN "No NNNN-*.patch files in $seriesDir\patches"; exit 1 }
+
+    Log "Patch series detected: $($seriesDir.Substring($Repo.Length).TrimStart('\'))"
+    OK "Base: $upstream @ $base ($($patches.Count) patches)"
+    $target = Join-Path $Repo $PATCHED_SUBDIR
+    $crlf = @("-c", "core.autocrlf=false")
+    if (-not (Test-Path -LiteralPath (Join-Path $target ".git"))) {
+        if (Test-Path -LiteralPath $target) { Remove-PathWithRetry $target }
+        git @gitLongPaths @crlf clone --no-checkout $upstream $target | Out-Host
+        if ($LASTEXITCODE -ne 0) { WARN "git clone $upstream failed"; exit 1 }
+        git -C $target config core.longpaths true | Out-Null
+        git -C $target config core.autocrlf false | Out-Null
+    }
+    # A previous run may have stopped in the middle of "git am".
+    Invoke-Native { & git -C $target am --abort } | Out-Null
+    Invoke-Native { & git -C $target cat-file -e "$base^{commit}" } | Out-Null
+    if ($script:LastNativeExit -ne 0) {
+        git @gitLongPaths -C $target fetch origin | Out-Host
+        if ($LASTEXITCODE -ne 0) { WARN "git fetch $upstream failed"; exit 1 }
+    }
+    git @gitLongPaths -C $target checkout -q -f --detach $base | Out-Host
+    if ($LASTEXITCODE -ne 0) { WARN "git checkout $base failed"; exit 1 }
+    git @gitLongPaths -C $target clean -fdx -e node_modules -q | Out-Host
+    if ($LASTEXITCODE -ne 0) { WARN "git clean failed"; exit 1 }
+    $patchPaths = @($patches | ForEach-Object { $_.FullName })
+    git @gitLongPaths -C $target -c user.name=tr-build -c user.email=tr-build@invalid am -q @patchPaths | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Native { & git -C $target am --abort } | Out-Null
+        WARN "Applying the patch series failed (git am)."
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $target "CMakeLists.txt"))) { WARN "Patched tree has no CMakeLists.txt: $target"; exit 1 }
+    OK "Patched source: $target ($(Invoke-Native { & git -C $target rev-parse --short=9 HEAD }))"
+    return $target
+}
+$srcDir = Resolve-PatchSeriesSource -Repo $dir
+
 # --- 9. CMAKE CONFIGURE ---
 Log "CMake configuration ($BuildType)"
 if ([string]::IsNullOrEmpty($BuildDir)) {
@@ -1294,7 +1363,7 @@ function Get-WebUiFlags {
     return $uiFlags
 }
 
-$uiFlags = @(Get-WebUiFlags -Repo $dir -Enabled ([bool]$BuildUi))
+$uiFlags = @(Get-WebUiFlags -Repo $srcDir -Enabled ([bool]$BuildUi))
 
 if ($Source -eq "ternary_bonsai" -and -not (Test-ExtraFlag "-DLLAMA_OPENSSL=")) {
     $uiFlags += "-DLLAMA_OPENSSL=OFF"
@@ -1322,7 +1391,7 @@ function Convert-FlashAttentionFlags {
     }
 }
 if ($BuildType -in @("HIP", "CUDA")) {
-    $extraFlagList = @(Convert-FlashAttentionFlags -Repo $dir -Flags $extraFlagList)
+    $extraFlagList = @(Convert-FlashAttentionFlags -Repo $srcDir -Flags $extraFlagList)
 }
 
 $buildTargetArgs = @()
@@ -1378,7 +1447,7 @@ if ($BuildType -eq "SYCL") {
 
     # SYCL uses Ninja generator, NOT Visual Studio
     $cmakeFlags = @(
-        "-S", $dir, "-B", $buildDir,
+        "-S", $srcDir, "-B", $buildDir,
         "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=cl",
@@ -1426,7 +1495,7 @@ if ($BuildType -eq "HIP") {
     }
 
     $cmakeFlags = @(
-        "-S", $dir, "-B", $buildDir,
+        "-S", $srcDir, "-B", $buildDir,
         "-G", "Ninja",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=$clangExe",
@@ -1470,7 +1539,7 @@ OK "VS: $($vs.Path) (v$($vs.Version) -> $vsGenerator)"
 Add-ToPath (Split-Path -Parent $msvcClExe)
 
 $cmakeFlags = @(
-    "-S", $dir, "-B", $buildDir,
+    "-S", $srcDir, "-B", $buildDir,
     "-G", $vsGenerator, "-A", "x64",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DLLAMA_BUILD_SERVER=ON",
