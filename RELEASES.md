@@ -1,5 +1,12 @@
 # Release builds
 
+## v2.4.5
+
+- Allow direct URL dependencies during the optional npm web UI build on
+  Windows, Linux and macOS. Fixes npm 12 `EALLOWREMOTE` for llama.cpp's
+  `llama-brand` dependency without changing global npm configuration.
+- Verify the Windows web UI helper tests and shell script syntax.
+
 ## v2.4.4
 
 - Make patch-series sources such as `ternii-ai/tritq-vllm` compile with

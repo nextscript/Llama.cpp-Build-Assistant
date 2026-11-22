@@ -1426,7 +1426,9 @@ function Get-WebUiFlags {
         Log "Building Web UI: $uiSource"
         Push-Location $uiSource
         try {
-            if (Test-Path "package-lock.json") { & npm.cmd ci | Out-Host } else { & npm.cmd install | Out-Host }
+            # npm 12 blocks URL dependencies by default. Current llama.cpp UI
+            # declares llama-brand as a direct tarball dependency.
+            if (Test-Path "package-lock.json") { & npm.cmd ci --allow-remote=root | Out-Host } else { & npm.cmd install --allow-remote=root | Out-Host }
             if ($LASTEXITCODE -ne 0) { throw "Web UI dependency install failed (exit $LASTEXITCODE)" }
             & npm.cmd run build | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "Web UI build failed (exit $LASTEXITCODE)" }

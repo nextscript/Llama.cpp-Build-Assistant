@@ -8,16 +8,13 @@ compatible Python toolchain, installs missing dependencies, and builds the
 appropriate `llama.cpp` variant for **your** hardware — across **Windows 10/11,
 macOS, Ubuntu and other Linux distros**.
 
-## What's new in v2.4.4
+## What's new in v2.4.5
 
-Patch-series sources such as
-[`ternii-ai/tritq-vllm`](https://github.com/ternii-ai/tritq-vllm) now also
-build with **Visual Studio** on Windows. The patches are written for
-GCC/Clang; the build assistant adjusts the patched files for MSVC
-(`__forceinline` instead of `__attribute__((always_inline))`, a small
-`pread`/`unistd.h` shim) right after applying them.
+The web UI build now permits direct URL dependencies declared by llama.cpp,
+including `llama-brand`, when using npm 12. This fixes `EALLOWREMOTE` during
+Windows and Linux builds without changing the user's npm configuration.
 
-See the [v2.4.4 changelog](#244) for details.
+See the [v2.4.5 changelog](#245) for details.
 
 ## Qt interface (since v2.3.9)
 

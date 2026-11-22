@@ -58,7 +58,7 @@ foreach ($layout in @("tools/ui", "tools/server/webui")) {
     New-Item -ItemType File -Path (Join-Path $ui "package-lock.json") | Out-Null
     $script:Calls = @()
     $flags = @(Get-WebUiFlags -Repo $repo -Enabled $true)
-    if (($script:Calls -join ',') -ne 'ci,run build') { throw "npm did not build $layout" }
+    if (($script:Calls -join ',') -ne 'ci --allow-remote=root,run build') { throw "npm did not build $layout with direct URL dependencies allowed" }
     if ($flags -notcontains '-DLLAMA_USE_PREBUILT_UI=OFF') { throw "Local UI was not selected" }
     if ($flags.Count -ne 2) { throw "npm output leaked into CMake flags" }
     $script:Calls = @()

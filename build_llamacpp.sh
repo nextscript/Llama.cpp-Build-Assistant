@@ -416,7 +416,8 @@ if [[ "$BUILD_UI" == "1" && -n "$ui_source" ]] && have npm; then
     log "Building Web UI: $ui_source"
     (
         cd "$ui_source"
-        if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+        # npm 12 blocks URL dependencies by default; allow direct project deps.
+        if [[ -f package-lock.json ]]; then npm ci --allow-remote=root; else npm install --allow-remote=root; fi
         npm run build
     )
     ui_flags=(-DLLAMA_BUILD_UI=ON -DLLAMA_USE_PREBUILT_UI=OFF)
